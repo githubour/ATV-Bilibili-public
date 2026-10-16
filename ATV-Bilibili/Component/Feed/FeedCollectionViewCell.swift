@@ -1,0 +1,209 @@
+//
+//  FeedCollectionViewCell.swift
+//  ATV-Bilibili
+//
+//  Created by yicheng on 2022/10/20.
+//
+
+import Kingfisher
+import MarqueeLabel
+import TVUIKit
+import UIKit
+
+class FeedCollectionViewCell: BLMotionCollectionViewCell {
+    var onLongPress: (() -> Void)?
+    var styleOverride: FeedDisplayStyle? { didSet { if oldValue != styleOverride { updateStyle() } }}
+
+    private let titleLabel = MarqueeLabel()
+    private let upLabel = UILabel()
+    private let imageView = UIImageView()
+    private let infoView = UIView()
+    private let avatarView = UIImageView()
+    private let overlayView = BLOverlayView()
+    /// 观看进度条（贴缩略图底边）：深色轨道 + B 站粉填充
+    private let progressTrackView = UIView()
+    private let progressFillView = UIView()
+
+    override func setup() {
+        super.setup()
+        let longpress = UILongPressGestureRecognizer(target: self, action: #selector(actionLongPress(sender:)))
+        addGestureRecognizer(longpress)
+
+        contentView.addSubview(imageView)
+        imageView.snp.makeConstraints { make in
+            make.leading.equalToSuperview()
+            make.trailing.equalToSuperview()
+            make.top.equalToSuperview()
+            make.height.equalTo(imageView.snp.width).multipliedBy(9.0 / 16)
+        }
+        imageView.layer.cornerRadius = 12
+        imageView.clipsToBounds = true
+        imageView.contentMode = .scaleAspectFill
+
+        contentView.addSubview(overlayView)
+        overlayView.snp.makeConstraints { make in
+            make.leading.equalTo(imageView.snp.leading)
+            make.trailing.equalTo(imageView.snp.trailing)
+            make.bottom.equalTo(imageView.snp.bottom)
+            make.top.equalTo(imageView.snp.top)
+        }
+        overlayView.layer.cornerRadius = imageView.layer.cornerRadius
+        overlayView.clipsToBounds = true
+
+        progressTrackView.backgroundColor = UIColor.black.withAlphaComponent(0.35)
+        progressTrackView.isHidden = true
+        imageView.addSubview(progressTrackView)
+        progressTrackView.snp.makeConstraints { make in
+            make.leading.trailing.bottom.equalToSuperview()
+            make.height.equalTo(6)
+        }
+        progressFillView.backgroundColor = .bilibiliPink
+        progressTrackView.addSubview(progressFillView)
+        progressFillView.snp.makeConstraints { make in
+            make.leading.top.bottom.equalToSuperview()
+            make.width.equalToSuperview().multipliedBy(0)
+        }
+
+        contentView.addSubview(infoView)
+        infoView.snp.makeConstraints { make in
+            make.leading.trailing.bottom.equalToSuperview()
+            make.top.equalTo(imageView.snp.bottom).offset(8)
+        }
+
+        let hStackView = UIStackView()
+        let stackView = UIStackView()
+        infoView.addSubview(hStackView)
+        hStackView.addArrangedSubview(avatarView)
+        hStackView.addArrangedSubview(stackView)
+        hStackView.snp.makeConstraints { make in
+            make.top.leading.trailing.equalToSuperview()
+            make.bottom.equalToSuperview().priority(.high)
+            make.height.equalTo(stackView.snp.height)
+        }
+
+        hStackView.alignment = .top
+        hStackView.spacing = 10
+        avatarView.backgroundColor = .clear
+        avatarView.snp.makeConstraints { make in
+            make.width.equalTo(avatarView.snp.height)
+            make.height.equalTo(stackView.snp.height).multipliedBy(0.7)
+        }
+        stackView.setContentHuggingPriority(.required, for: .vertical)
+        avatarView.setContentHuggingPriority(.defaultLow, for: .vertical)
+        avatarView.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        avatarView.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
+        avatarView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        stackView.axis = .vertical
+        stackView.addArrangedSubview(titleLabel)
+        stackView.addArrangedSubview(upLabel)
+        stackView.alignment = .leading
+        stackView.spacing = 6
+        stackView.setContentHuggingPriority(.required, for: .vertical)
+        titleLabel.holdScrolling = true
+        titleLabel.setContentHuggingPriority(.required, for: .vertical)
+        titleLabel.setContentCompressionResistancePriority(.required, for: .vertical)
+        titleLabel.fadeLength = 60
+        upLabel.setContentHuggingPriority(.required, for: .vertical)
+        upLabel.setContentCompressionResistancePriority(.required, for: .vertical)
+        upLabel.textColor = UIColor(named: "titleColor")
+        upLabel.adjustsFontSizeToFitWidth = true
+        upLabel.minimumScaleFactor = 0.1
+    }
+
+    func setup(data: any DisplayData) {
+        titleLabel.text = data.title
+        if let overlay = data.overlay {
+            overlayView.isHidden = false
+            overlayView.configure(overlay)
+        } else {
+            overlayView.isHidden = true
+        }
+        upLabel.text = [data.ownerName, data.date].compactMap({ $0 }).joined(separator: " · ")
+        if var pic = data.pic {
+            if pic.scheme == nil {
+                pic = URL(string: "http:\(pic.absoluteString)")!
+            }
+            imageView.kf.setImage(with: pic, options: .cover(width: 440, height: 248))
+        }
+        if let avatar = data.avatar(size: 240) {
+            avatarView.isHidden = false
+            avatarView.kf.setImage(with: avatar, options: .avatar)
+        } else {
+            avatarView.isHidden = true
+        }
+        if let progress = data.watchedProgress, progress > 0.001 {
+            progressTrackView.isHidden = false
+            progressFillView.snp.remakeConstraints { make in
+                make.leading.top.bottom.equalToSuperview()
+                make.width.equalToSuperview().multipliedBy(min(max(progress, 0), 1))
+            }
+        } else {
+            progressTrackView.isHidden = true
+        }
+        updateStyle()
+    }
+
+    override var focusMarqueeLabels: [MarqueeLabel] { [titleLabel] }
+
+    private func updateStyle() {
+        let style = styleOverride ?? Settings.displayStyle
+        titleLabel.font = style.titleFont
+        upLabel.font = style.upFont
+    }
+
+    @objc private func actionLongPress(sender: UILongPressGestureRecognizer) {
+        guard sender.state == .began else { return }
+        onLongPress?()
+    }
+
+    override func prepareForReuse() {
+        super.prepareForReuse()
+        onLongPress = nil
+        avatarView.image = nil
+        progressTrackView.isHidden = true
+        suspendFocusMarquee()
+    }
+}
+
+extension FeedDisplayStyle {
+    var fractionalWidth: CGFloat {
+        switch self {
+        case .large, .sideBar:
+            return 0.33
+        case .normal:
+            return 0.25
+        }
+    }
+
+    var heightEstimated: CGFloat {
+        switch self {
+        case .large:
+            return 516
+        case .normal, .sideBar:
+            return 380
+        }
+    }
+
+    var titleFont: UIFont {
+        switch self {
+        case .large:
+            return UIFont.preferredFont(forTextStyle: .headline)
+        case .normal:
+            return UIFont.systemFont(ofSize: 26, weight: .semibold)
+        case .sideBar:
+            return UIFont.systemFont(ofSize: 26, weight: .semibold)
+        }
+    }
+
+    var upFont: UIFont {
+        switch self {
+        case .large:
+            return UIFont.preferredFont(forTextStyle: .footnote)
+        case .normal:
+            return UIFont.systemFont(ofSize: 20)
+        case .sideBar:
+            return UIFont.systemFont(ofSize: 20, weight: .semibold)
+        }
+    }
+}

@@ -1,0 +1,132 @@
+// B站弹幕播放器信息(/x/v2/dm/web/view) proto 定义
+// 字段号/名称/类型从原 dmView.pb.swift 生成代码无损还原, 与 B 站线上协议对齐
+// 重新生成: 见本目录 README.md
+syntax = "proto3";
+
+// 分段弹幕配置
+message DmSegConfig {
+  // 分段时间 ms
+  int64 pageSize = 1;
+  // 最大分页数？
+  int64 total = 2;
+}
+
+// 云屏蔽配置信息
+message DanmakuFlagConfig {
+  // 云屏蔽等级
+  int32 recFlag = 1;
+  // 云屏蔽文案
+  string recText = 2;
+  // 云屏蔽开关
+  int32 recSwitch = 3;
+}
+
+// 互动弹幕条目
+message CommandDm {
+  // 弹幕id
+  int64 id = 1;
+  // 视频cid
+  int64 oid = 2;
+  // 发送者mid
+  int64 mid = 3;
+  // 弹幕指令
+  string command = 4;
+  // 弹幕文字
+  string content = 5;
+  // 弹幕出现时间
+  int32 progress = 6;
+  // 创建时间
+  string ctime = 7;
+  // 发布时间
+  string mtime = 8;
+  // 扩展json数据
+  string extra = 9;
+  // 弹幕id str类型
+  string idStr = 10;
+}
+
+// 弹幕个人配置
+message DanmuWebPlayerConfig {
+  // 弹幕开关
+  bool dmSwitch = 1;
+  // 智能云屏蔽
+  bool aiSwitch = 2;
+  // 智能云屏蔽级别
+  int32 aiLevel = 3;
+  // 屏蔽类型-顶部
+  bool blocktop = 4;
+  // 屏蔽类型-滚动
+  bool blockscroll = 5;
+  // 屏蔽类型-底部
+  bool blockbottom = 6;
+  // 屏蔽类型-彩色
+  bool blockcolor = 7;
+  // 屏蔽类型-特殊
+  bool blockspecial = 8;
+  // 防挡弹幕（底部15%）
+  bool preventshade = 9;
+  // 智能防挡弹幕（人像蒙版）
+  bool dmask = 10;
+  // 弹幕不透明度
+  float opacity = 11;
+  // 弹幕显示区域
+  int32 dmarea = 12;
+  // 弹幕速度
+  float speedplus = 13;
+  // 字体大小
+  float fontsize = 14;
+  // 跟随屏幕缩放比例
+  bool screensync = 15;
+  // 根据播放倍速调整速度
+  bool speedsync = 16;
+  // 字体类型
+  string fontfamily = 17;
+  // 粗体
+  bool bold = 18;
+  // 描边类型
+  int32 fontborder = 19;
+  // 渲染类型
+  string drawType = 20;
+  // 青少年模式
+  int32 seniorModeSwitch = 21;
+  int32 aiLevelV2 = 22;
+  map<int32, int32> aiLevelV2Map = 23;
+}
+
+message Expressions {
+  message Expression {
+    repeated string keyword = 1;
+    string url = 2;
+    message Period {
+      int64 start = 1;
+      int64 end = 2;
+    }
+    repeated Period period = 3;
+  }
+  repeated Expression data = 1;
+}
+
+// 弹幕信息-响应
+message DmWebViewReply {
+  // 弹幕开放状态 0:未关闭 1:已关闭
+  int32 state = 1;
+  string text = 2;
+  string textSide = 3;
+  // 分段弹幕包信息？
+  DmSegConfig dmSge = 4;
+  // 云屏蔽配置信息
+  DanmakuFlagConfig flag = 5;
+  // BAS（代码）弹幕专包url
+  repeated string specialDms = 6;
+  // check box 是否展示
+  bool checkBox = 7;
+  // 实际弹幕总数
+  int64 count = 8;
+  // 互动弹幕条目
+  repeated CommandDm commandDms = 9;
+  // 弹幕个人配置
+  DanmuWebPlayerConfig playerConfig = 10;
+  // 用户举报弹幕 cid维度屏蔽
+  repeated string reportFilterContent = 11;
+  repeated Expressions expressions = 12;
+}
