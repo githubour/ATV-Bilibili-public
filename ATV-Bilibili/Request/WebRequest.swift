@@ -15,6 +15,25 @@ enum RequestError: Error {
     case decodeFail(message: String)
 }
 
+extension RequestError: LocalizedError {
+    /// 面向用户的错误描述：把 B 站常见业务码翻成可读文案，其余回落到服务端 message
+    var errorDescription: String? {
+        switch self {
+        case .networkFail:
+            return "网络连接失败，请稍后再试"
+        case let .statusFail(code, message):
+            switch code {
+            case -101, -111: return "登录状态已失效，请重新登录"
+            case -412: return "请求被风控拦截，请稍后再试"
+            case -509: return "操作太频繁，请稍后再试"
+            default: return message.isEmpty ? "请求失败（错误码 \(code)）" : message
+            }
+        case let .decodeFail(message):
+            return "数据解析失败：\(message)"
+        }
+    }
+}
+
 enum ValidationError: Error {
     case argumentInvalid(message: String)
 }
@@ -45,9 +64,13 @@ enum NoCookieSession {
     }()
 }
 
+/// 常规请求会话。Cookie 不交给 URLSession 的共享存储，而是由 WebRequest / ApiRequest
+/// 按「当前活动账号」在请求创建时显式注入 Cookie 头 —— 切号只影响之后的新请求，
+/// 已在途请求持有创建时的 Cookie 快照，多账号并存不会串扰。
 enum BLSession {
     static let `default`: Session = {
         let config = URLSessionConfiguration.default
+        config.httpShouldSetCookies = false
         config.timeoutIntervalForRequest = 10
         config.timeoutIntervalForResource = 10
         return Session(configuration: config)
@@ -87,6 +110,11 @@ enum WebRequest {
         static let relationModify = "https://api.bilibili.com/x/relation/modify"
         static let spaceAccInfo = "https://api.bilibili.com/x/space/wbi/acc/info"
         static let spaceAccRelation = "https://api.bilibili.com/x/space/wbi/acc/relation"
+        // UP 空间内搜索：仅返回该 UP 主名下稿件（WBI 由 WebRequest 自动签名）
+        static let spaceArcSearch = "https://api.bilibili.com/x/space/wbi/arc/search"
+        // UP 空间合集：旧版 /x/polymer/space/seasons_archives_list 已返回 HTML 错误页，必须走 web-space
+        static let spaceSeasonsList = "https://api.bilibili.com/x/polymer/web-space/seasons_series_list"
+        static let spaceSeasonArchives = "https://api.bilibili.com/x/polymer/web-space/seasons_archives_list"
         static let nav = "https://api.bilibili.com/x/web-interface/nav"
 
         // —— 以下收归自各功能页散落的 WebRequest.EndPoint extension ——
@@ -138,6 +166,14 @@ enum WebRequest {
 
         if !afheaders.contains(where: { $0.name == "Referer" }) {
             afheaders.add(HTTPHeader(name: "Referer", value: Keys.referer))
+        }
+
+        // 按当前活动账号注入 Cookie（noCookie 请求跳过）；快照进请求头后即与后续换号解耦
+        if !noCookie,
+           let resolvedURL = try? url.asURL(),
+           let cookieHeader = CookieHandler.shared.cookieHeader(for: resolvedURL)
+        {
+            afheaders.add(HTTPHeader(name: "Cookie", value: cookieHeader))
         }
 
         // Session 配置(超时/无Cookie)在创建时已固定, 不在请求期修改
@@ -251,6 +287,15 @@ enum WebRequest {
     private static func throwIfStatusFail(_ raw: Data, url: URLConvertible) throws {
         guard let status = APIResponse.status(from: raw), status.code != 0 else { return }
         Logger.warn("[web] code:\(status.code) \(status.message) url:\(url)")
+        if status.code == -101 {
+            // 与 ApiRequest 保持一致：Web 接口不再默默弹一句“登录失效”，
+            // 而是标记账号并回登录页；这里不做删号（refresh_token 仍可能恢复）。
+            let mid = AccountManager.shared.activeAccount?.profile.mid
+            Task { @MainActor in
+                let isActive = AccountManager.shared.handleAuthenticationFailure(mid: mid)
+                if isActive { AppDelegate.shared.showLoginForExpiredSession() }
+            }
+        }
         // 风控校验失败，清掉 wbi 签名缓存下次重新取
         if status.code == -352 {
             Logger.warn("WbiSign error (code=-352), clearing cache. URL: \(url)")
@@ -387,13 +432,9 @@ extension WebRequest {
         }
     }
 
-    static func requestLike(aid: Int, like: Bool) async -> Bool {
-        do {
-            try await requestVoid(method: .post, url: EndPoint.like, parameters: ["aid": aid, "like": like ? "1" : "2"])
-            return true
-        } catch {
-            return false
-        }
+    /// 点赞 / 取消点赞。抛错交给调用方展示（用户显式动作，静默失败最伤信任）
+    static func requestLike(aid: Int, like: Bool) async throws {
+        try await requestVoid(method: .post, url: EndPoint.like, parameters: ["aid": aid, "like": like ? "1" : "2"])
     }
 
     /// 该接口 data 直接是 0/1
@@ -402,10 +443,9 @@ extension WebRequest {
         return liked == 1
     }
 
-    static func requestCoin(aid: Int, num: Int) {
-        Task {
-            try? await requestVoid(method: .post, url: EndPoint.coin, parameters: ["aid": aid, "multiply": num, "select_like": 1])
-        }
+    /// 投币（select_like=1 顺带点赞）。抛错交给调用方展示
+    static func requestCoin(aid: Int, num: Int) async throws {
+        try await requestVoid(method: .post, url: EndPoint.coin, parameters: ["aid": aid, "multiply": num, "select_like": 1])
     }
 
     static func requestCoinStatus(aid: Int) async -> Int {
@@ -427,43 +467,72 @@ extension WebRequest {
         let (isLiked, multiply, isFavoured) = await(liked, coinMulti, favoured)
 
         var done = [String]()
-        if !isLiked, await requestLike(aid: aid, like: true) {
-            done.append("点赞")
+        var failures = [String]()
+        if !isLiked {
+            do {
+                try await requestLike(aid: aid, like: true)
+                done.append("点赞")
+            } catch {
+                failures.append("点赞失败（\(error.localizedDescription)）")
+            }
         }
         if multiply == 0 {
-            requestCoin(aid: aid, num: 1)
-            done.append("投币")
+            do {
+                try await requestCoin(aid: aid, num: 1)
+                done.append("投币")
+            } catch {
+                failures.append("投币失败（\(error.localizedDescription)）")
+            }
         }
-        if !isFavoured, let folder = try? await requestFavVideosList().first {
-            requestFavorite(aid: aid, mid: folder.id)
-            done.append("收藏至「\(folder.title)」")
+        if !isFavoured {
+            // 此前 requestFavorite 是 fire-and-forget，请求还没发就先报「已收藏」；
+            // 现在等结果，失败如实进 failures。收藏夹列表拉取失败也不能静默跳过。
+            do {
+                if let folder = try await requestFavVideosList().first {
+                    try await requestFavorite(aid: aid, mid: folder.id)
+                    done.append("收藏至「\(folder.title)」")
+                } else {
+                    failures.append("收藏失败（没有可用的自建收藏夹）")
+                }
+            } catch {
+                failures.append("收藏失败（\(error.localizedDescription)）")
+            }
         }
 
-        if done.isEmpty {
-            return "已经三连过啦"
-        }
-        return "已\(done.joined(separator: "、"))"
+        return formattedTripleResult(done: done, failures: failures)
     }
 
-    /// 该接口没有外层 code/data 包装
+    private static func formattedTripleResult(done: [String], failures: [String]) -> String {
+        let success = done.isEmpty ? "" : "已\(done.joined(separator: "、"))"
+        let failed = failures.joined(separator: "；")
+        switch (success.isEmpty, failed.isEmpty) {
+        case (true, true): return "已经三连过啦"
+        case (true, false): return failed
+        case (false, true): return success
+        case (false, false): return "\(success)；\(failed)"
+        }
+    }
+
+    /// 该接口没有外层 code/data 包装；直接解析顶层 number，
+    /// 不能再走 request(dataObj: "")——那会恒返回 "null" 并解码失败成 0。
     static func requestTodayCoins() async -> Int {
         struct Resp: Decodable {
-            let number: Int
+            let number: Int?
         }
-        let resp: Resp? = try? await request(url: EndPoint.accountExp, dataObj: "")
-        return resp?.number ?? 0
+        guard let raw = try? await requestData(url: EndPoint.accountExp),
+              let resp = try? JSONDecoder().decode(Resp.self, from: raw)
+        else { return 0 }
+        return resp.number ?? 0
     }
 
-    static func requestFavorite(aid: Int, mid: Int) {
-        Task {
-            try? await requestVoid(method: .post, url: EndPoint.favResourceDeal, parameters: ["rid": aid, "type": 2, "add_media_ids": mid])
-        }
+    /// 收藏/取消收藏改为 async throws：此前 fire-and-forget + try? 吞错，
+    /// 网络失败时 UI 状态与服务器永久不一致且用户无感知（点赞/投币早就有回滚+提示，这两组双标了）
+    static func requestFavorite(aid: Int, mid: Int) async throws {
+        try await requestVoid(method: .post, url: EndPoint.favResourceDeal, parameters: ["rid": aid, "type": 2, "add_media_ids": mid])
     }
 
-    static func removeFavorite(aid: Int, mid: [Int]) {
-        Task {
-            try? await requestVoid(method: .post, url: EndPoint.favResourceDeal, parameters: ["rid": aid, "type": 2, "del_media_ids": mid.map { "\($0)" }.joined(separator: ",")])
-        }
+    static func removeFavorite(aid: Int, mid: [Int]) async throws {
+        try await requestVoid(method: .post, url: EndPoint.favResourceDeal, parameters: ["rid": aid, "type": 2, "del_media_ids": mid.map { "\($0)" }.joined(separator: ",")])
     }
 
     static func requestFavoriteStatus(aid: Int) async -> Bool {
@@ -515,11 +584,32 @@ extension WebRequest {
                                            area: String,
                                            options: PlayURLRequestOptions = .regular) async throws -> VideoPlayURLInfo
     {
-        let customServer = Settings.areaLimitCustomServer
-        guard !customServer.isEmpty else { throw ValidationError.argumentInvalid(message: "未设置解析服务器") }
+        let rawServer = Settings.areaLimitCustomServer.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !rawServer.isEmpty else { throw ValidationError.argumentInvalid(message: "未设置解析服务器") }
+
+        // 自定义解析服务器会把请求带出 B 站域名，绝不允许明文；也不发送 access_key。
+        let serverString = rawServer.contains("://") ? rawServer : "https://\(rawServer)"
+        guard let serverComponents = URLComponents(string: serverString),
+              serverComponents.scheme?.lowercased() == "https",
+              let serverHost = serverComponents.host, !serverHost.isEmpty,
+              let baseComponents = URLComponents(string: EndPoint.pcgPlayUrl)
+        else {
+            throw ValidationError.argumentInvalid(message: "解析服务器必须使用 HTTPS 且包含有效域名")
+        }
+        var components = baseComponents
+        components.host = serverHost
+        components.port = serverComponents.port
+        if !serverComponents.path.isEmpty, serverComponents.path != "/" {
+            let prefix = serverComponents.path.hasSuffix("/")
+                ? String(serverComponents.path.dropLast())
+                : serverComponents.path
+            components.path = prefix + baseComponents.path
+        }
+        guard let url = components.url else {
+            throw ValidationError.argumentInvalid(message: "解析服务器地址无效")
+        }
 
         // 解析服务器必须使用ep_id参数，不能使用avid参数，解析服务器一般有缓存，area和ep_id必须保持一致，要不然会被缓存拦截
-        let url = EndPoint.pcgPlayUrl.replacingOccurrences(of: "api.bilibili.com", with: customServer)
         var parameters: [String: Any] = ["ep_id": epid,
                                          "cid": cid,
                                          "qn": options.qn,
@@ -532,7 +622,12 @@ extension WebRequest {
         if options.enableFourK {
             parameters["fourk"] = 1
         }
-        if let access_key = ApiRequest.getToken()?.accessToken {
+        // 非 bilibili.com 主机不携带登录 token：解析服务器只需要 ep/cid/area。
+        // 必须写成精确域名或 `.bilibili.com` 子域，`evilbilibili.com` 不能命中。
+        let normalizedHost = serverHost.lowercased()
+        if normalizedHost == "bilibili.com" || normalizedHost.hasSuffix(".bilibili.com"),
+           let access_key = ApiRequest.getToken()?.accessToken
+        {
             parameters["access_key"] = access_key
         }
         parameters["appkey"] = ApiRequest.appkey
@@ -552,7 +647,13 @@ extension WebRequest {
         struct SubtitleContentResp: Codable {
             let body: [SubtitleContent]
         }
-        let resp = try await AF.request(url).serializingDecodable(SubtitleContentResp.self).value
+        // 走 BLSession（10s 超时）而非 Alamofire 默认会话（60s），并带上 UA/Referer：
+        // B 站字幕 CDN 目前不校验所以「能跑」，一旦校验 Referer 会静默拿不到字幕且难排查
+        let headers: HTTPHeaders = [
+            "User-Agent": Keys.userAgent,
+            "Referer": Keys.referer,
+        ]
+        let resp = try await BLSession.default.request(url, headers: headers).serializingDecodable(SubtitleContentResp.self).value
         return resp.body
     }
 
@@ -618,6 +719,36 @@ extension WebRequest {
         let param: Parameters = ["mid": mid]
         let resp: Resp = try await request(method: .get, url: EndPoint.spaceAccRelation, parameters: param)
         return resp.relation
+    }
+
+    /// UP 的合集列表。接口分页混排「合集 + 系列」，这里只回传合集。
+    static func requestUpSpaceSeasons(mid: Int, page: Int = 1, pageSize: Int = 20) async throws -> [UpSpaceSeasonMeta] {
+        let resp: UpSpaceSeasonsResponse = try await request(
+            method: .get,
+            url: EndPoint.spaceSeasonsList,
+            parameters: ["mid": mid, "page_num": page, "page_size": pageSize]
+        )
+        return resp.items_lists.seasons_list.map(\.meta)
+    }
+
+    /// 某个合集内的视频分页。接口不返回 cid，交给详情页解析。
+    static func requestUpSpaceSeasonArchives(mid: Int,
+                                             seasonId: Int,
+                                             page: Int = 1,
+                                             pageSize: Int = 20) async throws -> [SeasonArchive]
+    {
+        let resp: SeasonArchivesResponse = try await request(
+            method: .get,
+            url: EndPoint.spaceSeasonArchives,
+            parameters: [
+                "mid": mid,
+                "season_id": seasonId,
+                "sort_reverse": "false",
+                "page_num": page,
+                "page_size": pageSize,
+            ]
+        )
+        return resp.archives
     }
 
     static func logout() async {

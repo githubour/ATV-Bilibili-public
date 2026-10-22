@@ -22,7 +22,7 @@ class FeedFlowBrowserViewController: UIViewController, BLTabBarContentVCProtocol
     private var loadGeneration = 0
     private let playContextCache = PlayContextCache()
     private lazy var mediaWarmupManager = PlayerMediaWarmupManager(playContextCache: playContextCache)
-    private lazy var sequenceProvider = VideoSequenceProvider(seq: [])
+    private lazy var sequenceProvider = VideoSequenceProvider(seq: [], kind: dataSource.playbackQueueKind)
     private var lastPlayedItemIdentity: String?
     private var isPresentingFeedFlow = false
     private var activeReloadToken = ""
@@ -265,7 +265,7 @@ class FeedFlowBrowserViewController: UIViewController, BLTabBarContentVCProtocol
     }
 
     private func configureSequenceProvider(with items: [FeedFlowItem]) {
-        sequenceProvider = VideoSequenceProvider(seq: items.map(\.playInfo))
+        sequenceProvider = VideoSequenceProvider(seq: items.map(\.playInfo), kind: dataSource.playbackQueueKind)
         sequenceProvider.onNeedMore = { [weak self] in
             await self?.loadMoreItemsIfNeeded(targetCount: self?.dataSource.trailingPrefetchTargetCount ?? 8,
                                               maxSourcePages: self?.dataSource.trailingMaxSourcePages ?? 3)

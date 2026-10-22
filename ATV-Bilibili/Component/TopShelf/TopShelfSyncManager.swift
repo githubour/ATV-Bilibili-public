@@ -19,9 +19,14 @@ struct TopShelfItemData: Codable {
 struct TopShelfSyncData: Codable {
     var toView: [TopShelfItemData] = []
     var dynamic: [TopShelfItemData] = []
+    /// 继续观看（看到一半的历史）。向后兼容：老版本写入的 JSON 无此字段时按空处理
+    var history: [TopShelfItemData] = []
 }
 
-class TopShelfSyncManager {
+/// actor 化（2026-10-20）：此前是普通 class，lastRefresh/lastGoodData/refreshGeneration
+/// 全裸奔——冷启动 SceneDelegate 与 BLTabBar 同时触发 refresh 时，两个并发 Task 都能
+/// 通过节流检查（都读到旧值）而双双发起网络拉取。actor 天然串行化，节流检查原子。
+actor TopShelfSyncManager {
     static let shared = TopShelfSyncManager()
 
     /// App Group 跟随构建注入的 bundle id (双版本各自隔离, 不再硬编码)
@@ -36,11 +41,12 @@ class TopShelfSyncManager {
     /// 自增代数, 只有最新一代的异步结果才允许写入, 丢弃乱序完成的旧任务
     private var refreshGeneration = 0
     private var lastWriteTime: Date?
-    private(set) var lastErrorText: String?
+    private var lastErrorText: String?
 
     /// 按设置刷新共享数据; throttle 避免频繁拉取
-    func refresh(force: Bool = false) {
-        Task { await refreshAndReport(force: force) }
+    /// （nonisolated 保持调用点无需 await，与旧行为一致）
+    nonisolated func refresh(force: Bool = false) {
+        Task { await self.refreshAndReport(force: force) }
     }
 
     /// 执行刷新并返回诊断文本(设置页"Top Shelf 数据诊断"展示)
@@ -60,7 +66,18 @@ class TopShelfSyncManager {
 
         var data = TopShelfSyncData()
         var anySuccess = false
-        if source == .all || source == .toView {
+        let sections = source.sections
+        if sections.contains(.history) {
+            do {
+                data.history = try await fetchHistory()
+                anySuccess = true
+            } catch {
+                Logger.warn("[topshelf] 继续观看拉取失败: \(error)")
+                lastErrorText = "继续观看: \(Self.shortError(error))"
+                data.history = lastGoodData.history
+            }
+        }
+        if sections.contains(.toView) {
             do {
                 data.toView = try await fetchToView()
                 anySuccess = true
@@ -70,7 +87,7 @@ class TopShelfSyncManager {
                 data.toView = lastGoodData.toView
             }
         }
-        if source == .all || source == .dynamic {
+        if sections.contains(.dynamic) {
             do {
                 data.dynamic = try await fetchDynamic()
                 anySuccess = true
@@ -85,21 +102,24 @@ class TopShelfSyncManager {
         // 全部失败: 不写入, 保留主屏现有内容
         if anySuccess {
             lastGoodData = data
-            if data.toView.isEmpty == false || data.dynamic.isEmpty == false { lastErrorText = nil }
+            if data.toView.isEmpty == false || data.dynamic.isEmpty == false || data.history.isEmpty == false {
+                lastErrorText = nil
+            }
             write(data)
         }
         return statusDescription
     }
 
     /// 数据链路诊断: 登录态/来源/共享区实际内容(扩展进程读取的即此数据)/最近写入与错误
-    var statusDescription: String {
+    /// （actor 隔离：只在本类型内部同步调用，外部经 refreshAndReport 拿到）
+    private var statusDescription: String {
         var parts: [String] = []
         parts.append(ApiRequest.isLogin() ? "已登录" : "未登录")
         parts.append("来源:\(Settings.topShelfSource.title)")
         if let data = UserDefaults(suiteName: Self.appGroupID)?.data(forKey: Self.storageKey),
            let sync = try? JSONDecoder().decode(TopShelfSyncData.self, from: data)
         {
-            parts.append("共享区: 稍后再看\(sync.toView.count)条·动态\(sync.dynamic.count)条")
+            parts.append("共享区: 稍后再看\(sync.toView.count)条·动态\(sync.dynamic.count)条·继续观看\(sync.history.count)条")
         } else {
             parts.append("共享区: 无数据")
         }
@@ -138,6 +158,20 @@ class TopShelfSyncManager {
         }
     }
 
+    private func fetchHistory() async throws -> [TopShelfItemData] {
+        // 继续观看 = 已开始但未看完的历史；progress/duration 单位为毫秒，progress<=0 表示未真正观看
+        let list = try await WebRequest.requestHistory()
+        return list
+            .filter { $0.progress > 0 && ($0.duration <= 0 || $0.progress < $0.duration) }
+            .prefix(Self.maxItemCount)
+            .compactMap { item -> TopShelfItemData? in
+                guard let pic = item.pic, !pic.absoluteString.isEmpty else { return nil }
+                return TopShelfItemData(aid: item.aid,
+                                        title: item.title,
+                                        cover: pic.absoluteString)
+            }
+    }
+
     private func write(_ data: TopShelfSyncData) {
         guard let defaults = UserDefaults(suiteName: Self.appGroupID) else {
             Logger.warn("[topshelf] 无法访问 App Group \(Self.appGroupID)")
@@ -150,6 +184,6 @@ class TopShelfSyncManager {
             lastWriteTime = Date()
         }
         TVTopShelfContentProvider.topShelfContentDidChange()
-        Logger.debug("[topshelf] 已写入 稍后再看:\(data.toView.count) 动态:\(data.dynamic.count)")
+        Logger.debug("[topshelf] 已写入 继续观看:\(data.history.count) 稍后再看:\(data.toView.count) 动态:\(data.dynamic.count)")
     }
 }

@@ -21,7 +21,10 @@ struct EpisodeEntry: Hashable {
 
 extension EpisodeEntry {
     /// 从播放序列构建选集列表。isBangumi 决定集数文案用「N」还是「PN」。
-    static func build(from playSeq: [PlayInfo], isBangumi: Bool, coverURL: URL?) -> [EpisodeEntry] {
+    static func build(from playSeq: [PlayInfo],
+                      isBangumi: Bool,
+                      coverURL: URL?) -> [EpisodeEntry]
+    {
         playSeq.enumerated().map { index, info in
             let indexText = isBangumi ? "\(index + 1)" : "P\(index + 1)"
             // 番剧的 title 本身就带集数（详情页按 title + long_title 拼的 part），不要再前缀一次编号

@@ -71,7 +71,8 @@ final class FeedFlowListCell: BLMotionCollectionViewCell {
         self.isCurrent = isCurrent
 
         if let coverURL = item.coverURL {
-            imageView.kf.setImage(with: coverURL)
+            // 图片位固定 170 宽、高度随 cell 浮动, 按 170x170 的框降采样即可覆盖最大显示尺寸
+            imageView.kf.setImage(with: coverURL, options: .cover(width: 170, height: 170))
         } else {
             imageView.image = nil
         }

@@ -26,6 +26,27 @@ struct PlayerDetailData {
     }
 }
 
+/// 播放数据装配的业务性失败（替代 throw String：调用方拿整段文案无法分支处理）
+enum PlaybackError: LocalizedError {
+    /// 番剧区域限制/大会员等 statusFail，需要按 code 区分展示
+    case needVipAccess(code: Int, message: String)
+    /// 充电专属视频
+    case upowerExclusive(underlying: String)
+    /// PlayInfo 解析出的 cid 缺失（如番剧 episodes 为空），此前会以 cid=0 继续请求
+    case missingCid
+
+    var errorDescription: String? {
+        switch self {
+        case let .needVipAccess(code, message):
+            return "\(code) \(message)，可能需要大会员"
+        case let .upowerExclusive(underlying):
+            return "该视频为充电专属视频 \(underlying)"
+        case .missingCid:
+            return "视频分P信息异常（cid 缺失），请尝试重新进入"
+        }
+    }
+}
+
 @MainActor
 class VideoPlayerViewModel {
     let loadResult = PassthroughSubject<Result<[CommonPlayerPlugin], String>, Never>()
@@ -45,6 +66,11 @@ class VideoPlayerViewModel {
     private let previewMuted: Bool
     private let startTimeOverride: Int?
     private let startTimeOverrideContentIdentity: String
+    /// 详情页已经拿到的 detail/playerInfo：起播时直接复用，省两次重复请求。
+    /// 只对创建时的 aid/cid 生效，连播切集后不能拿旧条目的 playerInfo。
+    private var seededPlayerInfo: PlayerInfo?
+    private let seededPlayerInfoAid: Int
+    private let seededPlayerInfoCid: Int
     private var videoDetail: VideoDetail?
     /// 插件订阅，随每次重新加载（切集 / 重试）一起重建
     private var cancellables = Set<AnyCancellable>()
@@ -57,7 +83,9 @@ class VideoPlayerViewModel {
          playContextCache: PlayContextCache? = nil,
          mediaWarmupManager: PlayerMediaWarmupManager? = nil,
          previewMuted: Bool = true,
-         startTimeOverride: Int? = nil)
+         startTimeOverride: Int? = nil,
+         initialDetail: VideoDetail? = nil,
+         initialPlayerInfo: PlayerInfo? = nil)
     {
         self.playInfo = playInfo
         self.playMode = playMode
@@ -67,6 +95,10 @@ class VideoPlayerViewModel {
         self.previewMuted = previewMuted
         self.startTimeOverride = startTimeOverride
         startTimeOverrideContentIdentity = playInfo.contentIdentity
+        videoDetail = initialDetail
+        seededPlayerInfo = initialPlayerInfo
+        seededPlayerInfoAid = playInfo.aid
+        seededPlayerInfoCid = playInfo.cid ?? 0
     }
 
     var currentPlayInfo: PlayInfo {
@@ -106,7 +138,9 @@ class VideoPlayerViewModel {
 
             let danmakuProvider = VideoDanmakuProvider(enableDanmakuFilter: Settings.enableDanmakuFilter,
                                                        enableDanmakuRemoveDup: Settings.enableDanmakuRemoveDup)
-            await danmakuProvider.initVideo(cid: data.cid, startPos: data.playerStartPos ?? 0)
+            // 弹幕是增强信息，不应挡住起播：先装配插件、加载媒体，弹幕在后台补齐。
+            // initVideo 内部按 cid 拉两路接口，弱网/接口慢时旧写法会让黑屏多等数秒。
+            Task { await danmakuProvider.initVideo(cid: data.cid, startPos: data.playerStartPos ?? 0) }
             guard !Task.isCancelled, loadGeneration == generation else { return }
 
             playInfo = resolvedPlayInfo
@@ -138,8 +172,19 @@ class VideoPlayerViewModel {
         return try? await WebRequest.requestDetailVideo(aid: aid)
     }
 
+    /// 起播用的 playerInfo：详情页已传入就直接复用，否则才发请求。
+    private func playerInfoForLoad(aid: Int, cid: Int) async -> PlayerInfo? {
+        if aid == seededPlayerInfoAid, cid == seededPlayerInfoCid, let seeded = seededPlayerInfo {
+            seededPlayerInfo = nil
+            return seeded
+        }
+        return try? await WebRequest.requestPlayerInfo(aid: aid, cid: cid)
+    }
+
     private func fetchVideoData(for playInfo: PlayInfo) async throws -> PlayerDetailData {
-        assert(playInfo.isCidValid)
+        // assert 只在 Debug 生效；cid 缺失的脏 PlayInfo 必须在入口拒绝，
+        // 否则拿着 cid=0 继续请求 playerInfo 得到一串无意义结果
+        guard let cid = playInfo.cid, cid > 0 else { throw PlaybackError.missingCid }
         let existingVideoDetail = videoDetail?.View.aid == playInfo.aid ? videoDetail : nil
         if !playInfo.isBangumi, let playContextCache {
             let cached = try await playContextCache.context(for: playInfo, mode: playContextMode)
@@ -166,8 +211,7 @@ class VideoPlayerViewModel {
         }
 
         let aid = playInfo.aid
-        let cid = playInfo.cid!
-        async let infoReq = try? WebRequest.requestPlayerInfo(aid: aid, cid: cid)
+        async let infoReq = playerInfoForLoad(aid: aid, cid: cid)
         async let detailReq = fetchVideoDetail(aid: aid, existing: existingVideoDetail)
         do {
             let playData: VideoPlayURLInfo
@@ -195,7 +239,7 @@ class VideoPlayerViewModel {
             let info = await infoReq
             let resolvedDetail = await detailReq
 
-            var detail = PlayerDetailData(aid: playInfo.aid, cid: playInfo.cid!, epid: playInfo.epid, seasonId: playInfo.seasonId, subType: playInfo.subType, detail: resolvedDetail, clips: clipInfos, playerInfo: info, videoPlayURLInfo: playData)
+            var detail = PlayerDetailData(aid: playInfo.aid, cid: cid, epid: playInfo.epid, seasonId: playInfo.seasonId, subType: playInfo.subType, detail: resolvedDetail, clips: clipInfos, playerInfo: info, videoPlayURLInfo: playData)
 
             let last_play_cid = playInfo.lastPlayCid ?? info?.last_play_cid ?? 0
             let playTimeInSecond = playInfo.playTimeInSecond ?? info?.playTimeInSecond ?? 0
@@ -209,9 +253,9 @@ class VideoPlayerViewModel {
 
         } catch let err {
             if case let .statusFail(code, message) = err as? RequestError {
-                throw "\(code) \(message)，可能需要大会员"
+                throw PlaybackError.needVipAccess(code: code, message: message)
             } else if await infoReq?.is_upower_exclusive == true {
-                throw "该视频为充电专属视频 \(err)"
+                throw PlaybackError.upowerExclusive(underlying: String(describing: err))
             } else {
                 throw err
             }
@@ -332,8 +376,8 @@ class VideoPlayerViewModel {
         let playlist = VideoPlayListPlugin(sequenceProvider: sequenceProvider)
         playlist.isReversed = sequenceDirection == .reverse
         playlist.onPlayEnd = { [weak self] in
-            guard self?.playMode == .regular else { return }
-            self?.onExit?()
+            guard let self, self.playMode != .preview else { return }
+            self.onExit?()
         }
         playlist.onPlayNextWithInfo = {
             [weak self] info in
@@ -365,9 +409,7 @@ class VideoPlayerViewModel {
 
         // 添加画质选择器插件
         let qualitySelector = BVideoQualityPlugin(detailData: data) { [weak playplugin] qualityId, streamIndex in
-            Task { @MainActor in
-                await playplugin?.switchQuality(to: qualityId, streamIndex: streamIndex)
-            }
+            await playplugin?.switchQuality(to: qualityId, streamIndex: streamIndex) ?? false
         }
 
         plugins.append(qualitySelector)
@@ -461,7 +503,8 @@ extension VideoPlayerViewModel {
         let checkAreaList = parseAreaByTitle(title: checkTitle)
         guard !checkAreaList.isEmpty else { return nil }
 
-        let playData = try await requestAreaLimitPcgPlayUrl(epid: epid, cid: playInfo.cid!, areaList: checkAreaList)
+        guard let cid = playInfo.cid, cid > 0 else { return nil }
+        let playData = try await requestAreaLimitPcgPlayUrl(epid: epid, cid: cid, areaList: checkAreaList)
         return playData
     }
 
@@ -484,8 +527,8 @@ extension VideoPlayerViewModel {
     }
 
     private func parseAreaByTitle(title: String) -> [String] {
-        if title.isMatch(pattern: "[仅|僅].*[东南亚|其他]") {
-            // TODO: 未支持
+        if title.isMatch(pattern: "(仅|僅).*(东南亚|其他)") {
+            // 其他地区暂不支持
             return []
         }
 

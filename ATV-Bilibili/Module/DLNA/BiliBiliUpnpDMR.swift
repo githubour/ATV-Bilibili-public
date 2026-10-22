@@ -25,7 +25,6 @@ class BiliBiliUpnpDMR: NSObject {
 
     private var udp: GCDAsyncUdpSocket!
     private var httpServer = HttpServer()
-    private var connectedSockets = [GCDAsyncSocket]()
     @MainActor private var sessions = Set<NVASession>()
     private var started = false
     private var ip: String?
@@ -117,15 +116,19 @@ class BiliBiliUpnpDMR: NSObject {
             return HttpResponse.internalServerError(nil)
         }
 
-        httpServer["/debug/log"] = {
-            req in
-            if let path = Logger.latestLogPath(),
-               let str = try? String(contentsOf: URL(fileURLWithPath: path), encoding: .utf8)
-            {
-                return HttpResponse.ok(.text(str))
+        #if DEBUG
+            // 调试日志只允许本地 Debug 构建读取；Release 的 9958 端口只保留投屏协议，
+            // 避免同一局域网内任意设备读到视频标题/账号诊断信息。
+            httpServer["/debug/log"] = {
+                req in
+                if let path = Logger.latestLogPath(),
+                   let str = try? String(contentsOf: URL(fileURLWithPath: path), encoding: .utf8)
+                {
+                    return HttpResponse.ok(.text(str))
+                }
+                return HttpResponse.internalServerError(nil)
             }
-            return HttpResponse.internalServerError(nil)
-        }
+        #endif
     }
 
     func stop() {
@@ -380,10 +383,14 @@ extension BiliBiliUpnpDMR {
         } else {
             player = VideoDetailViewController.create(aid: aid, cid: cid)
         }
-        let topMost = UIViewController.topMostViewController()
-        if let _ = AppDelegate.shared.mainWindow!.rootViewController?.presentedViewController {
-            AppDelegate.shared.mainWindow!.rootViewController?.dismiss(animated: false) {
-                player.present(from: UIViewController.topMostViewController(), directlyEnterVideo: true)
+        guard let root = AppDelegate.shared.mainWindow?.rootViewController else {
+            Logger.warn("[dlna] 收到投屏 Play，但当前没有可用窗口，已忽略")
+            return
+        }
+        let topMost = root.topMostViewController()
+        if root.presentedViewController != nil {
+            root.dismiss(animated: false) {
+                player.present(from: root.topMostViewController(), directlyEnterVideo: true)
             }
         } else {
             player.present(from: topMost, directlyEnterVideo: true)

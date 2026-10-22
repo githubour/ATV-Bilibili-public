@@ -64,12 +64,19 @@ final class VideoSequenceProvider {
     private(set) var playSeq: [PlayInfo]
     private(set) var currentIndex: Int
     private(set) var temporaryOverrides = [PlayInfo]()
+    /// 队列来源：自动连播策略据此判断是否应该跨集推进
+    let kind: PlaybackQueueKind
     private let preloadThreshold: Int
     var onNeedMore: (() async -> Void)?
 
-    init(seq: [PlayInfo], currentIndex: Int = 0, preloadThreshold: Int = 8) {
+    init(seq: [PlayInfo],
+         currentIndex: Int = 0,
+         kind: PlaybackQueueKind,
+         preloadThreshold: Int = 8)
+    {
         playSeq = seq.uniqued()
         self.currentIndex = max(0, min(currentIndex, max(playSeq.count - 1, 0)))
+        self.kind = kind
         self.preloadThreshold = preloadThreshold
     }
 
@@ -169,17 +176,6 @@ class VideoPlayerViewController: CommonPlayerViewController {
             case .next: return "下一条"
             }
         }
-
-        init?(title: String) {
-            let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmedTitle.contains(Self.previous.title) {
-                self = .previous
-            } else if trimmedTitle.contains(Self.next.title) {
-                self = .next
-            } else {
-                return nil
-            }
-        }
     }
 
     var sequenceProvider: VideoSequenceProvider?
@@ -200,7 +196,6 @@ class VideoPlayerViewController: CommonPlayerViewController {
     private var currentRetryKey: String
     private var hasRetriedCurrentItem = false
     private var isStopping = false
-    private var pendingAutoTriggeredInfoActionKey: String?
 
     init(playInfo: PlayInfo,
          playMode: VideoPlayerMode = .regular,
@@ -208,7 +203,9 @@ class VideoPlayerViewController: CommonPlayerViewController {
          playContextCache: PlayContextCache? = nil,
          mediaWarmupManager: PlayerMediaWarmupManager? = nil,
          previewMuted: Bool = true,
-         startTimeOverride: Int? = nil)
+         startTimeOverride: Int? = nil,
+         initialDetail: VideoDetail? = nil,
+         initialPlayerInfo: PlayerInfo? = nil)
     {
         self.playMode = playMode
         self.playContextCache = playContextCache
@@ -220,7 +217,9 @@ class VideoPlayerViewController: CommonPlayerViewController {
                                          playContextCache: playContextCache,
                                          mediaWarmupManager: mediaWarmupManager,
                                          previewMuted: previewMuted,
-                                         startTimeOverride: startTimeOverride)
+                                         startTimeOverride: startTimeOverride,
+                                         initialDetail: initialDetail,
+                                         initialPlayerInfo: initialPlayerInfo)
         currentRetryKey = playInfo.sequenceKey
         super.init(nibName: nil, bundle: nil)
         if playMode == .preview {
@@ -262,7 +261,7 @@ class VideoPlayerViewController: CommonPlayerViewController {
             }
         }.store(in: &cancelable)
 
-        if playMode == .regular {
+        if playMode != .preview {
             viewModel.onExit = { [weak self] in
                 self?.dismiss(animated: true)
             }
@@ -279,15 +278,6 @@ class VideoPlayerViewController: CommonPlayerViewController {
             doubleDownTap.allowedPressTypes = [NSNumber(value: UIPress.PressType.downArrow.rawValue)]
             doubleDownTap.numberOfTapsRequired = 2
             view.addGestureRecognizer(doubleDownTap)
-
-            NotificationCenter.default.addObserver(self,
-                                                   selector: #selector(handleInfoActionFocusedNotification(_:)),
-                                                   name: UICollectionViewCell.infoActionFocusedNotification,
-                                                   object: nil)
-            NotificationCenter.default.addObserver(self,
-                                                   selector: #selector(handleSystemFocusUpdate(_:)),
-                                                   name: UIFocusSystem.didUpdateNotification,
-                                                   object: nil)
         }
 
         viewModel.load()
@@ -344,7 +334,6 @@ class VideoPlayerViewController: CommonPlayerViewController {
             currentRetryKey = info.sequenceKey
             hasRetriedCurrentItem = false
         }
-        pendingAutoTriggeredInfoActionKey = nil
         onPlayInfoChanged?(info)
     }
 
@@ -422,133 +411,6 @@ class VideoPlayerViewController: CommonPlayerViewController {
         Task { [weak self] in
             guard let self else { return }
             _ = await self.viewModel.playNextFromSequence()
-        }
-    }
-
-    @available(tvOS 11.0, *)
-    @objc private func handleSystemFocusUpdate(_ note: Notification) {
-        guard playMode == .feedFlow,
-              let context = note.userInfo?[UIFocusSystem.focusUpdateContextUserInfoKey] as? UIFocusUpdateContext,
-              let nextView = context.nextFocusedView
-        else { return }
-
-        installAVInfoPanelHookIfNeeded(for: nextView)
-        #if DEBUG
-            Logger.debug("[FocusDiag] 焦点落在了类: \(type(of: nextView))")
-            let dumpResult = dumpViewHierarchy(nextView, depth: 0)
-            Logger.debug("[FocusDiag] 子视图结构:\n\(dumpResult)")
-        #endif
-    }
-
-    #if DEBUG
-        private func dumpViewHierarchy(_ view: UIView, depth: Int) -> String {
-            guard depth < 6 else { return "" }
-            let indent = String(repeating: "  ", count: depth)
-            var result = "\(indent)- \(type(of: view))"
-            if let label = view as? UILabel {
-                result += " text: '\(label.text ?? "")' attr: '\(label.attributedText?.string ?? "")'"
-            } else if let btn = view as? UIButton {
-                result += " title: '\(btn.title(for: .normal) ?? "")'"
-            }
-            result += "\n"
-            for subview in view.subviews {
-                result += dumpViewHierarchy(subview, depth: depth + 1)
-            }
-            return result
-        }
-    #endif
-
-    private func installAVInfoPanelHookIfNeeded(for view: UIView) {
-        guard containsAVInfoPanelHierarchy(from: view) else { return }
-        guard AVInfoPanelCollectionViewThumbnailCellHook.start(),
-              let title = extractInfoActionTitle(from: view)
-        else { return }
-        handleFocusedInfoAction(title: title)
-    }
-
-    private func containsAVInfoPanelHierarchy(from view: UIView) -> Bool {
-        var currentView: UIView? = view
-        var remainingDepth = 8
-
-        while let ancestorView = currentView, remainingDepth > 0 {
-            if NSStringFromClass(type(of: ancestorView)).contains("AVInfoPanel") {
-                return true
-            }
-            remainingDepth -= 1
-            currentView = ancestorView.superview
-        }
-
-        return false
-    }
-
-    private func extractInfoActionTitle(from view: UIView) -> String? {
-        var currentView: UIView? = view
-        var remainingDepth = 8
-
-        while let candidate = currentView, remainingDepth > 0 {
-            if let title = matchingInfoActionTitle(in: candidate, maxDepth: 0) {
-                return title
-            }
-            let isActionContainer = candidate is UICollectionViewCell ||
-                NSStringFromClass(type(of: candidate)).contains("AVInfoPanel")
-            if isActionContainer,
-               let title = matchingInfoActionTitle(in: candidate, maxDepth: 4)
-            {
-                return title
-            }
-            remainingDepth -= 1
-            currentView = candidate.superview
-        }
-        return nil
-    }
-
-    private func matchingInfoActionTitle(in view: UIView, maxDepth: Int) -> String? {
-        let titles: [String?]
-        if let label = view as? UILabel {
-            titles = [label.text, label.attributedText?.string, label.accessibilityLabel]
-        } else if let button = view as? UIButton {
-            titles = [button.title(for: .focused), button.title(for: .normal), button.accessibilityLabel]
-        } else {
-            titles = [view.accessibilityLabel]
-        }
-        if let title = titles.compactMap({ $0 }).first(where: { AutoTriggeredInfoAction(title: $0) != nil }) {
-            return title
-        }
-        guard maxDepth > 0 else { return nil }
-        for subview in view.subviews {
-            if let title = matchingInfoActionTitle(in: subview, maxDepth: maxDepth - 1) {
-                return title
-            }
-        }
-        return nil
-    }
-
-    @objc private func handleInfoActionFocusedNotification(_ note: Notification) {
-        guard let title = note.userInfo?["title"] as? String else { return }
-        handleFocusedInfoAction(title: title)
-    }
-
-    private func handleFocusedInfoAction(title: String) {
-        guard playMode == .feedFlow,
-              let action = AutoTriggeredInfoAction(title: title)
-        else { return }
-
-        let actionKey = "\(currentPlayInfo.sequenceKey)::\(action.rawValue)"
-        guard pendingAutoTriggeredInfoActionKey != actionKey else { return }
-        pendingAutoTriggeredInfoActionKey = actionKey
-
-        Task { [weak self] in
-            guard let self else { return }
-            let didTrigger: Bool
-            switch action {
-            case .previous:
-                didTrigger = await self.viewModel.playPreviousFromSequence()
-            case .next:
-                didTrigger = await self.viewModel.playNextFromSequence()
-            }
-            if !didTrigger, self.pendingAutoTriggeredInfoActionKey == actionKey {
-                self.pendingAutoTriggeredInfoActionKey = nil
-            }
         }
     }
 }

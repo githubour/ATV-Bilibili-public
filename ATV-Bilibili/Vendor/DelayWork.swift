@@ -25,8 +25,11 @@ class DelayWork {
     /// 提交一个延迟任务
     /// - Parameter work: 要执行的异步任务
     func submit(_ work: @escaping @MainActor () async throws -> Void) {
+        // 立即路径也必须登记任务：此前这里直接 return 不给 task 赋值，task 恒为 nil，
+        // 导致「每次 submit 都满足首次条件」——防抖完全失效（搜索联想曾每敲一键发一次请求），
+        // 且立即执行的任务无法被后续 cancel。
         if task == nil, noDelayForFirstTask {
-            Task { @MainActor in
+            task = Task { @MainActor in
                 try? await work()
             }
             return

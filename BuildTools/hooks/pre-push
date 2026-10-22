@@ -1,0 +1,42 @@
+#!/bin/bash
+# ATV-Bilibili pre-push 回归钩子：push 前跑一遍全量单测，失败即拒推。
+#
+# 启用（每个工作副本各设一次；钩子文件本身不进 .git/hooks）：
+#   git config core.hooksPath BuildTools/hooks
+# 本机私有备份仓为低频同步，GitHub Actions 已 disable，
+# 回归保护就靠这道本地钩子（全量测试约 40s，可接受）。
+set -e
+
+SIMULATOR_ID="${ATV_TEST_SIMULATOR_ID:-9E4DEDA0-C5D3-4267-90AD-AFB137ACFFAC}"
+
+if ! xcrun simctl list devices available | grep -q "${SIMULATOR_ID}"; then
+  echo "[pre-push] 找不到模拟器 ${SIMULATOR_ID}（可用 ATV_TEST_SIMULATOR_ID 覆盖），拒绝推送"
+  exit 1
+fi
+
+echo "[pre-push] 运行 ATV-BilibiliTests（ZenPlayer tvOS 模拟器）..."
+# 构建产物默认落在 ~/Library/Developer/Xcode/DerivedData，而本机把它软链到了外置卷。
+# Simulator 应用启动时 dyld 会按 rpath 访问该路径，macOS 隐私权限下可能卡在 open；
+# 因此测试固定用内置盘的独立 DerivedData，并复用已有 SPM 缓存避免重新联网解析。
+TEST_DD="${ATV_TEST_DERIVED_DATA:-$HOME/Library/Developer/Xcode/DerivedData-ATV-Bilibili}"
+SPM_CACHE="${ATV_TEST_SPM_CACHE:-}"
+DD_ROOT="$HOME/Library/Developer/Xcode/DerivedData"
+if [ -L "$DD_ROOT" ]; then DD_ROOT=$(readlink "$DD_ROOT"); fi
+if [ -z "$SPM_CACHE" ] && [ -d "$DD_ROOT" ]; then
+  SPM_CACHE=$(find "$DD_ROOT" -maxdepth 2 -type d -name SourcePackages 2>/dev/null | grep -m1 'ATV-Bilibili-' || true)
+fi
+EXTRA_ARGS=""
+if [ -n "$SPM_CACHE" ] && [ -d "$SPM_CACHE" ]; then
+  EXTRA_ARGS="-clonedSourcePackagesDirPath $SPM_CACHE -disableAutomaticPackageResolution"
+fi
+
+xcodebuild test \
+  -project ATV-Bilibili.xcodeproj \
+  -scheme ATV-Bilibili \
+  -destination "platform=tvOS Simulator,id=${SIMULATOR_ID}" \
+  -destination-timeout 60 \
+  -derivedDataPath "$TEST_DD" \
+  $EXTRA_ARGS \
+  -quiet
+
+echo "[pre-push] 单测通过，允许推送"

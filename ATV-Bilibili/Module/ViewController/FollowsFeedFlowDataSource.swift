@@ -22,6 +22,7 @@ final class FollowsFeedFlowViewController: FeedFlowBrowserViewController {
 /// 关注流数据源: offset+page 双游标, 单循环凑够 targetCount 后一次性 commit
 final class FollowsFeedFlowDataSource: FeedFlowDataSource {
     let title = "关注"
+    let playbackQueueKind: PlaybackQueueKind = .followingFeed
     let defaultPreviewHintText = "停留后自动预览，按确认键进入视频流"
     let loadingHintText = "正在加载关注视频..."
     let emptyStateText = "当前关注区暂无可播放视频"

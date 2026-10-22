@@ -10,6 +10,24 @@ import CryptoKit
 import Foundation
 
 extension WebRequest {
+    /// WBI 预热请求专用：不读写 URLSession 的共享 cookie 存储，
+    /// Cookie 一律从 CookieHandler 按当前账号显式注入。
+    private static let wbiURLSession: URLSession = {
+        let config = URLSessionConfiguration.ephemeral
+        config.httpShouldSetCookies = false
+        config.timeoutIntervalForRequest = 10
+        config.timeoutIntervalForResource = 10
+        return URLSession(configuration: config)
+    }()
+
+    private static let wbiAFSession: Session = {
+        let config = URLSessionConfiguration.ephemeral
+        config.httpShouldSetCookies = false
+        config.timeoutIntervalForRequest = 10
+        config.timeoutIntervalForResource = 10
+        return Session(configuration: config)
+    }()
+
     static func addWbiSign(method: HTTPMethod = .get,
                            url: URLConvertible,
                            parameters: Parameters = [:],
@@ -42,13 +60,6 @@ extension WebRequest {
 
     // https://github.com/SocialSisterYi/bilibili-API-collect/blob/master/docs/misc/sign/wbi.md#Swift
     private static func biliWbiSign(param: String, completion: @escaping (String?) -> Void) {
-        // WebId Cache
-        class WebIdCache {
-            var webId: String?
-
-            static let shared = WebIdCache()
-        }
-
         func getWebId(needRefresh: Bool = false, completion: @escaping (String?) -> Void) {
             if let cached = WebIdCache.shared.webId, !needRefresh {
                 completion(cached)
@@ -68,14 +79,11 @@ extension WebRequest {
             request.setValue(Keys.userAgent, forHTTPHeaderField: "User-Agent")
             request.setValue(Keys.liveReferer, forHTTPHeaderField: "Referer")
 
-            if let cookies = HTTPCookieStorage.shared.cookies(for: url) {
-                let cookieHeaders = HTTPCookie.requestHeaderFields(with: cookies)
-                for (key, value) in cookieHeaders {
-                    request.setValue(value, forHTTPHeaderField: key)
-                }
+            if let cookieHeader = CookieHandler.shared.cookieHeader(for: url) {
+                request.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
             }
 
-            let task = URLSession.shared.dataTask(with: request) { data, response, error in
+            let task = wbiURLSession.dataTask(with: request) { data, response, error in
                 guard let data = data,
                       let html = String(data: data, encoding: .utf8),
                       error == nil
@@ -91,7 +99,7 @@ extension WebRequest {
                        let range = Range(match.range(at: 1), in: html)
                     {
                         let accessId = String(html[range])
-                        WebIdCache.shared.webId = accessId
+                        WebIdCache.shared.store(accessId)
                         completion(accessId)
                         return
                     }
@@ -103,31 +111,33 @@ extension WebRequest {
         }
 
         func getWbiKeys(completion: @escaping (Result<(imgKey: String, subKey: String, refresh: Bool), Error>) -> Void) {
-            if let imgKey = WbiKeysCache.shared.imgKey,
-               let subKey = WbiKeysCache.shared.subKey,
-               let lastUpdate = WbiKeysCache.shared.lastUpdate,
-               Date().timeIntervalSince(lastUpdate) < 60 * 60 * 2,
-               Calendar.current.isDate(Date(), inSameDayAs: lastUpdate)
-            {
-                completion(.success((imgKey, subKey, false)))
+            if let cached = WbiKeysCache.shared.cachedKeys(maxAge: 60 * 60 * 2) {
+                completion(.success((cached.imgKey, cached.subKey, false)))
                 return
             }
 
-            let headers: HTTPHeaders = [
+            var headers: HTTPHeaders = [
                 "User-Agent": Keys.userAgent,
                 "Referer": Keys.referer,
             ]
+            if let cookieHeader = CookieHandler.shared.cookieHeader(forURL: WebRequest.EndPoint.nav) {
+                headers.add(HTTPHeader(name: "Cookie", value: cookieHeader))
+            }
 
-            AF.request(WebRequest.EndPoint.nav, headers: headers).responseData { response in
+            wbiAFSession.request(WebRequest.EndPoint.nav, headers: headers).responseData { response in
                 switch response.result {
                 case let .success(value):
                     let imgURL = APIResponse.string(from: value, path: "data", "wbi_img", "img_url")
                     let subURL = APIResponse.string(from: value, path: "data", "wbi_img", "sub_url")
                     let imgKey = imgURL.components(separatedBy: "/").last?.components(separatedBy: ".").first ?? ""
                     let subKey = subURL.components(separatedBy: "/").last?.components(separatedBy: ".").first ?? ""
-                    WbiKeysCache.shared.imgKey = imgKey
-                    WbiKeysCache.shared.subKey = subKey
-                    WbiKeysCache.shared.lastUpdate = Date()
+                    // nav 响应结构变化/风控页会解析出空串：绝不能当 success 往下走，
+                    // deriveMixinKey 对短串取下标会直接越界崩溃——签名失败降级即可
+                    guard !imgKey.isEmpty, !subKey.isEmpty else {
+                        completion(.failure(WbiSignError.emptyKeys))
+                        return
+                    }
+                    WbiKeysCache.shared.update(imgKey: imgKey, subKey: subKey)
                     completion(.success((imgKey, subKey, true)))
                 case let .failure(error):
                     completion(.failure(error))
@@ -142,11 +152,12 @@ extension WebRequest {
                     let spdParam = param.components(separatedBy: "&")
                     var spdDicParam = [String: String]()
                     for pair in spdParam {
-                        let components = pair.components(separatedBy: "=")
+                        // 只按第一个 = 切分：值里允许出现 =（例如 base64 / 用户输入）
+                        let components = pair.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
                         if components.count == 2 {
                             // URL decode the parameter value
-                            let decodedValue = components[1].removingPercentEncoding ?? components[1]
-                            spdDicParam[components[0]] = decodedValue
+                            let decodedValue = String(components[1]).removingPercentEncoding ?? String(components[1])
+                            spdDicParam[String(components[0])] = decodedValue
                         }
                     }
 
@@ -171,7 +182,13 @@ extension WebRequest {
                         }
                     }
 
-                    let query = orderedParams.joined(separator: "&")
+                    // 签名串用原始值（与既有算法一致）；发出去的 query 必须把值里的
+                    // & + = # 编码掉，否则会被服务端当成新的参数边界，导致签名错位。
+                    let query = orderedParams.map { pair -> String in
+                        let parts = pair.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+                        guard parts.count == 2 else { return pair }
+                        return "\(parts[0])=\(WbiCrypto.escapeQueryValue(String(parts[1])))"
+                    }.joined(separator: "&")
                     completion(query)
                 }
             case let .failure(error):
@@ -183,27 +200,78 @@ extension WebRequest {
 
     // MARK: - WbiKeys Cache
 
-    class WbiKeysCache {
-        var imgKey: String?
-        var subKey: String?
-        var lastUpdate: Date?
-
+    /// wbi keys 缓存：Alamofire 回调线程写、任意请求线程读（-352 时还会被清），
+    /// 全部字段用一把锁保护；锁内只有纯赋值/取值
+    final class WbiKeysCache {
         static let shared = WbiKeysCache()
 
-        private init() {}
+        private let lock = NSLock()
+        private var _imgKey: String?
+        private var _subKey: String?
+        private var _lastUpdate: Date?
+
+        /// 未过期（maxAge 内且同一天）则返回缓存键对，否则 nil
+        func cachedKeys(maxAge: TimeInterval) -> (imgKey: String, subKey: String)? {
+            lock.lock(); defer { lock.unlock() }
+            guard let imgKey = _imgKey, let subKey = _subKey, let lastUpdate = _lastUpdate,
+                  Date().timeIntervalSince(lastUpdate) < maxAge,
+                  Calendar.current.isDate(Date(), inSameDayAs: lastUpdate)
+            else { return nil }
+            return (imgKey, subKey)
+        }
+
+        func update(imgKey: String, subKey: String) {
+            lock.lock(); defer { lock.unlock() }
+            _imgKey = imgKey
+            _subKey = subKey
+            _lastUpdate = Date()
+        }
 
         func clear() {
-            imgKey = nil
-            subKey = nil
-            lastUpdate = nil
+            lock.lock(); defer { lock.unlock() }
+            _imgKey = nil
+            _subKey = nil
+            _lastUpdate = nil
         }
+
+        private init() {}
     }
+
+    /// WBI 签名环节的可预期失败
+    private struct WbiSignError: LocalizedError {
+        static let emptyKeys = WbiSignError()
+        var errorDescription: String? { "wbi keys 解析为空（nav 接口异常或被风控页拦截）" }
+    }
+}
+
+/// webId 缓存：URLSession 回调线程写、任意请求线程读，锁保护。
+/// （曾以「函数体内嵌套 class」的形式藏在 biliWbiSign 里，提取到文件作用域）
+private final class WebIdCache {
+    static let shared = WebIdCache()
+
+    private let lock = NSLock()
+    private var _webId: String?
+
+    var webId: String? {
+        lock.lock(); defer { lock.unlock() }
+        return _webId
+    }
+
+    func store(_ value: String) {
+        lock.lock(); defer { lock.unlock() }
+        _webId = value
+    }
+
+    private init() {}
 }
 
 /// WBI 签名纯函数：mixin key 派生 / 参数签名 / MD5。
 /// 供 biliWbiSign 与单元测试共同使用（encWbi 额外读取当前时间作为 wts）。
 enum WbiCrypto {
     static func deriveMixinKey(_ orig: String) -> String {
+        // 防御：imgKey/subKey 异常为空/短串时按表取下标会越界崩溃；
+        // 返回空串只会让本次签名错误（服务端拒绝→清缓存重取），属安全降级
+        guard orig.count >= 64 else { return "" }
         let mixinKeyEncTab = [
             46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35, 27, 43, 5, 49,
             33, 9, 42, 19, 29, 28, 14, 39, 12, 38, 41, 13, 37, 48, 7, 16, 24, 55, 40,
@@ -235,8 +303,17 @@ enum WbiCrypto {
         return params
     }
 
+    /// 只编码会破坏 query 结构的字符；中文/空格保持现状，避免改变既有签名行为。
+    static func escapeQueryValue(_ value: String) -> String {
+        var result = value
+        for (raw, encoded) in [("&", "%26"), ("+", "%2B"), ("=", "%3D"), ("#", "%23")] {
+            result = result.replacingOccurrences(of: raw, with: encoded)
+        }
+        return result
+    }
+
     static func md5Hex(_ string: String) -> String {
-        let messageData = string.data(using: .utf8)!
+        let messageData = string.data(using: .utf8) ?? Data()
         let digestData = Insecure.MD5.hash(data: messageData)
         let digestHex = String(digestData.map { String(format: "%02hhx", $0) }.joined().prefix(32))
         return digestHex

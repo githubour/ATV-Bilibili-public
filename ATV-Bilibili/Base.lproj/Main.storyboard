@@ -359,8 +359,9 @@
                                                                         <outlet property="delegate" destination="Q5X-tf-Ysh" id="NEw-gJ-LIf"/>
                                                                     </connections>
                                                                 </collectionView>
-                                                                <label opaque="NO" userInteractionEnabled="NO" contentMode="left" horizontalHuggingPriority="251" verticalHuggingPriority="251" text="视频选集" textAlignment="natural" lineBreakMode="tailTruncation" baselineAdjustment="alignBaselines" adjustsFontSizeToFit="NO" translatesAutoresizingMaskIntoConstraints="NO" id="ktx-5B-HwA" accessibilityIdentifier="pageSectionTitleLabel">
+                                                                <label opaque="NO" userInteractionEnabled="NO" contentMode="left" horizontalHuggingPriority="251" verticalHuggingPriority="251" text="视频选集" textAlignment="natural" lineBreakMode="tailTruncation" baselineAdjustment="alignBaselines" adjustsFontSizeToFit="NO" translatesAutoresizingMaskIntoConstraints="NO" id="ktx-5B-HwA">
                                                                     <rect key="frame" x="88" y="40" width="182" height="58"/>
+                                                                    <accessibility key="accessibilityConfiguration" identifier="pageSectionTitleLabel"/>
                                                                     <fontDescription key="fontDescription" style="UICTFontTextStyleTitle3"/>
                                                                     <nil key="textColor"/>
                                                                     <nil key="highlightedColor"/>

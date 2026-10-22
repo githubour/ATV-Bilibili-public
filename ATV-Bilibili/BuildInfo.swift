@@ -8,9 +8,9 @@
 
 enum BuildInfo {
     /// 营销版本, 与两个 target 的 Info.plist CFBundleShortVersionString 保持一致
-    static let marketingVersion = "1.2.0"
+    static let marketingVersion = "1.3.0"
     /// 构建号 = git 提交数, 与两个 target 的 Info.plist CFBundleVersion 保持一致
-    static let buildNumber = 566
+    static let buildNumber = 608
     /// 版本戳对应的代码提交
-    static let commitHash = "40e25c3"
+    static let commitHash = "a68f124"
 }

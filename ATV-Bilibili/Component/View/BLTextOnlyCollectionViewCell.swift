@@ -13,9 +13,16 @@ class BLTextOnlyCollectionViewCell: BLMotionCollectionViewCell {
     private let selectedWhiteView = UIView()
     let titleLabel = UILabel()
 
+    override var accessibilityLabel: String? {
+        get { titleLabel.text }
+        set {}
+    }
+
     override func setup() {
         super.setup()
         scaleFactor = 1.15
+        isAccessibilityElement = true
+        accessibilityTraits = .button
         contentView.addSubview(effectView)
         effectView.snp.makeConstraints { make in
             make.edges.equalToSuperview()

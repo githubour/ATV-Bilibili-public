@@ -29,6 +29,10 @@ extension String {
         return regex.firstMatch(in: self, options: [], range: NSMakeRange(0, utf16.count)) != nil
     }
 
+    /// URL 字符串的 host。播放链路（选流/测速/日志/DLNA）原来各写一遍 `URLComponents(string:)?.host`，
+    /// 统一收在这里；解析失败返回 nil，调用方自行决定默认值。
+    var urlHost: String? { URLComponents(string: self)?.host }
+
     func removingHTMLTags() -> String {
         return replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression, range: nil)
     }

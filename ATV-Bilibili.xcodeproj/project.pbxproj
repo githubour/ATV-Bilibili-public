@@ -332,7 +332,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "if [ \"$CONFIGURATION\" != \"Debug\" ]; then exit 0; fi\ncd BuildTools\nSDKROOT=(xcrun --sdk macosx --show-sdk-path)\nswift run -c release swiftformat --disable unusedArguments,numberFormatting,redundantReturn,andOperator,anyObjectProtocol,trailingClosures,redundantFileprivate --ranges nospace --swiftversion 5 \"$SRCROOT\"\n";
+			shellScript = "if [ \"$CONFIGURATION\" != \"Debug\" ]; then exit 0; fi\ncd BuildTools\nexport SDKROOT=\"$(xcrun --sdk macosx --show-sdk-path)\"\nswift run -c release swiftformat --disable unusedArguments,numberFormatting,redundantReturn,andOperator,anyObjectProtocol,trailingClosures,redundantFileprivate --ranges nospace --swiftversion 5 \"$SRCROOT\"\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
@@ -380,6 +380,7 @@
 				APP_BUNDLE_ID = com.example.bilibilitv;
 				CODE_SIGN_ENTITLEMENTS = TopShelf/TopShelf.entitlements;
 				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = YOURTEAMID;
 				INFOPLIST_FILE = TopShelf/Info.plist;
 				LD_ENTRY_POINT = _NSExtensionMain;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -403,6 +404,7 @@
 				APP_BUNDLE_ID = com.example.bilibilitv;
 				CODE_SIGN_ENTITLEMENTS = TopShelf/TopShelf.entitlements;
 				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = YOURTEAMID;
 				INFOPLIST_FILE = TopShelf/Info.plist;
 				LD_ENTRY_POINT = _NSExtensionMain;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -595,6 +597,7 @@
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_ENTITLEMENTS = "ATV-Bilibili/Supporting Files/ATV-Bilibili.entitlements";
 				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = YOURTEAMID;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(PROJECT_DIR)/ATV-Bilibili/Vendor",
@@ -629,6 +632,7 @@
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_ENTITLEMENTS = "ATV-Bilibili/Supporting Files/ATV-Bilibili.entitlements";
 				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = YOURTEAMID;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(PROJECT_DIR)/ATV-Bilibili/Vendor",

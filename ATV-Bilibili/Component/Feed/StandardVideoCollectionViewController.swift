@@ -195,7 +195,7 @@ class StandardVideoCollectionViewController<T: PlayableData>: UIViewController, 
 
         Logger.info("[sequence] \(reversed ? "倒序" : "顺序")播放，起点 \(startIndex + 1)/\(seq.count)")
         let player = VideoPlayerViewController(playInfo: seq[startIndex])
-        player.sequenceProvider = VideoSequenceProvider(seq: seq, currentIndex: startIndex)
+        player.sequenceProvider = VideoSequenceProvider(seq: seq, currentIndex: startIndex, kind: .manualSequence)
         player.sequencePlayDirection = reversed ? .reverse : .forward
         present(player, animated: true)
     }
@@ -233,7 +233,9 @@ class StandardVideoCollectionViewController<T: PlayableData>: UIViewController, 
                 collectionVC.appendData(displayData: res)
                 page += 1
             } catch {
-                // 翻页是自动触发的，失败只记日志不弹窗，避免打断浏览
+                // 翻页是自动触发的，失败只记日志不弹窗，避免打断浏览；
+                // 但必须复位 isLoading，否则一次失败后永远不再加载下一页
+                collectionVC.finishLoading()
                 Logger.warn(error)
             }
         }

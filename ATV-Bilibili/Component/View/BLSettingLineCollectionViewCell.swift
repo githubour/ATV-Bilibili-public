@@ -44,9 +44,16 @@ class BLSettingLineCollectionViewCell: BLMotionCollectionViewCell {
         }
     }
 
+    override var accessibilityLabel: String? {
+        get { titleLabel.text }
+        set {}
+    }
+
     override func setup() {
         super.setup()
         scaleFactor = 1.05
+        isAccessibilityElement = true
+        accessibilityTraits = .button
         if usesGlassStyle {
             // Liquid Glass 风格: 胶囊默认隐身, 选中/聚焦才浮现; 侧栏铺在系统底色上随明暗模式,
             // 文字用语义色自适应(浅底深字/深底白字), 浮现的玻璃胶囊吸取背后明度, 两种模式均可读

@@ -12,6 +12,7 @@ import UIKit
 
 class FollowUpsViewController: UIViewController {
     var collectionView: UICollectionView!
+    private lazy var emptyLabel = UILabel.emptyState("暂无关注的 UP 主")
 
     /// 分页状态机收编在 PagedProvider (与关注页头像条同源共用):
     /// 成功才推进页码修掉旧实现的跳页问题, 失败不停摆可滚动重试, 按 mid 去重
@@ -33,8 +34,12 @@ class FollowUpsViewController: UIViewController {
         collectionView.delegate = self
         view.addSubview(collectionView)
         collectionView.makeConstraintsToBindToSuperview()
+        view.addSubview(emptyLabel)
+        emptyLabel.makeConstraintsCenteredWithinSafeArea(of: view)
         provider.onItemsChange = { [weak self] in
-            self?.collectionView.reloadData()
+            guard let self else { return }
+            self.collectionView.reloadData()
+            self.emptyLabel.isHidden = !self.provider.items.isEmpty
         }
         provider.refresh()
     }
@@ -144,7 +149,12 @@ extension WebRequest {
         }
 
         let list: Resp = try await request(url: EndPoint.followings,
-                                           parameters: ["vmid": mid, "order_type": "attention", "pn": page])
+                                           parameters: ["vmid": mid,
+                                                        "order_type": "attention",
+                                                        "pn": page,
+                                                        // PagedProvider 以 40 条/页判断是否到底；不传 ps 时 B 站默认 20，
+                                                        // 第一页就会被误判成“最后一页”。显式固定，别依赖服务端默认值。
+                                                        "ps": 40])
         return list.list
     }
 

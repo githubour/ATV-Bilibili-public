@@ -80,6 +80,11 @@ class VideoDetailViewController: UIViewController {
     private var playTimeInSecond: Int?
     private var subType: Int?
     private var data: VideoDetail?
+    /// 详情页已经拉到的播放信息：起播时传给播放器，省一次重复请求。
+    private var detailPlayerInfo: PlayerInfo?
+    /// 详情加载代次：快速连点相关视频时，只允许最后一次请求写 UI/播放器。
+    private var loadGeneration = 0
+    private var fetchTask: Task<Void, Never>?
     @IBOutlet var scrollView: UIScrollView!
     private var didSentCoins = 0 {
         didSet {
@@ -169,7 +174,7 @@ class VideoDetailViewController: UIViewController {
             self?.view.setNeedsLayout()
         }.store(in: &cancellables)
 
-        Task { await fetchData() }
+        reloadData()
     }
 
     override var preferredFocusedView: UIView? {
@@ -264,7 +269,7 @@ class VideoDetailViewController: UIViewController {
         } else {
             vc.present(self, animated: true) { [weak self] in
                 guard let self else { return }
-                let player = VideoPlayerViewController(playInfo: PlayInfo(aid: self.aid, cid: self.cid, epid: self.epid, seasonId: isBangumi ? self.seasonId : nil, lastPlayCid: self.lastPlayCid, playTimeInSecond: self.playTimeInSecond))
+                let player = self.makeVideoPlayer(for: PlayInfo(aid: self.aid, cid: self.cid, epid: self.epid, seasonId: isBangumi ? self.seasonId : nil, lastPlayCid: self.lastPlayCid, playTimeInSecond: self.playTimeInSecond))
                 self.present(player, animated: true)
             }
         }
@@ -274,7 +279,18 @@ class VideoDetailViewController: UIViewController {
         presentError(error, title: "获取失败", dismissSelf: true)
     }
 
+    /// 站内换片/首屏加载统一入口：取消上一轮请求，避免旧响应覆盖新视频。
+    private func reloadData() {
+        fetchTask?.cancel()
+        fetchTask = Task { [weak self] in
+            await self?.fetchData()
+        }
+    }
+
     private func fetchData() async {
+        loadGeneration += 1
+        let generation = loadGeneration
+        detailPlayerInfo = nil
         scrollView.setContentOffset(.zero, animated: false)
         setNeedsFocusUpdate()
         updateFocusIfNeeded()
@@ -285,8 +301,9 @@ class VideoDetailViewController: UIViewController {
         ugcView.isHidden = true
         do {
             if seasonId > 0 {
-                isBangumi = true
                 let info = try await WebRequest.requestBangumiInfo(seasonID: seasonId)
+                guard !Task.isCancelled, generation == loadGeneration else { return }
+                isBangumi = true
                 subType = info.type
                 if let epi = info.episodes.first(where: { $0.id == info.user_status?.progress?.last_ep_id }) ?? info.episodes.first ?? info.section?.first?.episodes.first {
                     aid = epi.aid
@@ -296,8 +313,9 @@ class VideoDetailViewController: UIViewController {
                 }
                 pages = info.episodes.map({ VideoPage(cid: $0.cid, page: $0.aid, epid: $0.id, from: "", part: $0.title + " " + $0.long_title) })
             } else if epid > 0 {
-                isBangumi = true
                 let info = try await WebRequest.requestBangumiInfo(epid: epid)
+                guard !Task.isCancelled, generation == loadGeneration else { return }
+                isBangumi = true
                 seasonId = info.season_id
                 subType = info.type
                 if let epi = info.findEpisodeById(epid) ?? info.episodes.first {
@@ -310,12 +328,14 @@ class VideoDetailViewController: UIViewController {
                 pages = info.episodes.map({ VideoPage(cid: $0.cid, page: $0.aid, epid: $0.id, from: "", part: $0.title + " " + $0.long_title) })
             }
             let data = try await WebRequest.requestDetailVideo(aid: aid)
+            guard !Task.isCancelled, generation == loadGeneration else { return }
             self.data = data
 
             if let redirect = data.View.redirect_url?.lastPathComponent, redirect.starts(with: "ep"), let id = Int(redirect.dropFirst(2)), !isBangumi {
+                let info = try await WebRequest.requestBangumiInfo(epid: id)
+                guard !Task.isCancelled, generation == loadGeneration else { return }
                 isBangumi = true
                 epid = id
-                let info = try await WebRequest.requestBangumiInfo(epid: epid)
                 seasonId = info.season_id
                 subType = info.type
                 pages = info.episodes.map({ VideoPage(cid: $0.cid, page: $0.aid, epid: $0.id, from: "", part: $0.title + " " + $0.long_title) })
@@ -325,6 +345,8 @@ class VideoDetailViewController: UIViewController {
             }
             if !isBangumi {
                 let playInfo = try await WebRequest.requestPlayerInfo(aid: aid, cid: cid == 0 ? data.View.cid : cid)
+                guard !Task.isCancelled, generation == loadGeneration else { return }
+                detailPlayerInfo = playInfo
                 if cid == 0 {
                     cid = playInfo.last_play_cid > 0 ? playInfo.last_play_cid : data.View.cid
                 }
@@ -333,8 +355,10 @@ class VideoDetailViewController: UIViewController {
                     lastPlayCid = playInfo.last_play_cid
                 }
             }
+            guard !Task.isCancelled, generation == loadGeneration else { return }
             update(with: data)
         } catch let err {
+            guard !Task.isCancelled, generation == loadGeneration else { return }
             if case let .statusFail(code, _) = err as? RequestError, code == -404 {
                 // 解锁港澳台番剧处理
                 if !(await fetchAreaLimitBangumiData()) {
@@ -345,10 +369,13 @@ class VideoDetailViewController: UIViewController {
             }
         }
 
+        guard !Task.isCancelled, generation == loadGeneration else { return }
+        let requestedAid = aid
         Task { [weak self] in
             guard let self else { return }
             do {
-                let replys = try await WebRequest.requestReplys(aid: self.aid)
+                let replys = try await WebRequest.requestReplys(aid: requestedAid)
+                guard !Task.isCancelled, generation == self.loadGeneration, self.aid == requestedAid else { return }
                 self.replys = replys
                 self.replysCollectionView.reloadData()
             } catch {
@@ -358,10 +385,15 @@ class VideoDetailViewController: UIViewController {
 
         Task { [weak self] in
             guard let self else { return }
-            self.likeButton.isOn = await WebRequest.requestLikeStatus(aid: aid)
-            self.didSentCoins = await WebRequest.requestCoinStatus(aid: aid)
+            let liked = await WebRequest.requestLikeStatus(aid: requestedAid)
+            let coins = await WebRequest.requestCoinStatus(aid: requestedAid)
+            guard !Task.isCancelled, generation == self.loadGeneration, self.aid == requestedAid else { return }
+            self.likeButton.isOn = liked
+            self.didSentCoins = coins
             guard !self.isBangumi else { return }
-            self.favButton.isOn = await WebRequest.requestFavoriteStatus(aid: aid)
+            let favorite = await WebRequest.requestFavoriteStatus(aid: requestedAid)
+            guard !Task.isCancelled, generation == self.loadGeneration, self.aid == requestedAid else { return }
+            self.favButton.isOn = favorite
         }
 
         if isBangumi {
@@ -386,6 +418,9 @@ class VideoDetailViewController: UIViewController {
 
             let season = try await WebRequest.requestBangumiSeasonView(seasonID: info.season_id)
             isBangumi = true
+            // 补一次 seasonId：港澳台路径可能由 epid 进来（self.seasonId 还是 0），
+            // 不补的话分集来源标注查表会全落空
+            seasonId = info.season_id
             if let epi = season.episodes.first(where: { $0.ep_id == epid }) ?? season.episodes.first {
                 aid = epi.aid
                 cid = epi.cid
@@ -433,8 +468,9 @@ class VideoDetailViewController: UIViewController {
 
         avatarImageView.kf.setImage(with: data.avatar(size: 240), options: .avatar)
 
-        coverImageView.kf.setImage(with: data.pic)
-        backgroundImageView.kf.setImage(with: data.pic)
+        // 封面按 storyboard 里的 622x350 显示尺寸降采样; 背景图在 UIVisualEffectView 之下(必然被模糊), 降到 960x540 无感
+        coverImageView.kf.setImage(with: data.pic, options: .cover(width: 640, height: 360))
+        backgroundImageView.kf.setImage(with: data.pic, options: .cover(width: 960, height: 540))
         recommandCollectionView.superview?.isHidden = data.Related.count == 0
 
         var notes = [String]()
@@ -496,23 +532,37 @@ class VideoDetailViewController: UIViewController {
         followButton.isOn.toggle()
         guard let mid = data?.View.owner.mid else { return }
         let follow = followButton.isOn
-        Task {
-            try? await WebRequest.follow(mid: mid, follow: follow)
+        Task { [weak self] in
+            do {
+                try await WebRequest.follow(mid: mid, follow: follow)
+            } catch {
+                // 失败回滚 + 提示，与 actionLike 同一标准（静默失败最伤信任）
+                self?.followButton.isOn = !follow
+                self?.presentAlert(title: follow ? "关注失败" : "取消关注失败", message: error.localizedDescription)
+            }
         }
     }
 
+    /// 详情页起播/分 P：把已取到的 detail/playerInfo 传给播放器；只在同一 aid/cid 时复用，避免串集。
+    private func makeVideoPlayer(for playInfo: PlayInfo) -> VideoPlayerViewController {
+        let canSeed = playInfo.aid == aid && (playInfo.cid ?? 0) == cid
+        return VideoPlayerViewController(playInfo: playInfo,
+                                         initialDetail: data,
+                                         initialPlayerInfo: canSeed ? detailPlayerInfo : nil)
+    }
+
     @IBAction func actionPlay(_ sender: Any) {
-        let player = VideoPlayerViewController(playInfo: PlayInfo(aid: aid, cid: cid, epid: epid, seasonId: seasonId, subType: subType, lastPlayCid: lastPlayCid, playTimeInSecond: playTimeInSecond, title: data?.title))
+        let player = makeVideoPlayer(for: PlayInfo(aid: aid, cid: cid, epid: epid, seasonId: seasonId, subType: subType, lastPlayCid: lastPlayCid, playTimeInSecond: playTimeInSecond, title: data?.title))
         if pages.count > 0, let index = pages.firstIndex(where: { $0.cid == cid }) {
             let seq = pages.map({ PlayInfo(aid: aid, cid: $0.cid, epid: $0.epid, seasonId: seasonId, subType: subType, title: $0.part) })
             if seq.count > 0 {
-                player.sequenceProvider = VideoSequenceProvider(seq: seq, currentIndex: index)
+                player.sequenceProvider = VideoSequenceProvider(seq: seq, currentIndex: index, kind: .episodes)
             }
         }
         if allUgcEpisodes.count > 0, let index = allUgcEpisodes.firstIndex(where: { $0.cid == cid }) {
             let seq = allUgcEpisodes.map({ PlayInfo(aid: $0.aid, cid: $0.cid, title: $0.title) })
             if seq.count > 0 {
-                player.sequenceProvider = VideoSequenceProvider(seq: seq, currentIndex: index)
+                player.sequenceProvider = VideoSequenceProvider(seq: seq, currentIndex: index, kind: .ugcCollection)
             }
         }
         present(player, animated: true, completion: nil)
@@ -526,9 +576,18 @@ class VideoDetailViewController: UIViewController {
                 likeButton.title? += 1
             }
             likeButton.isOn.toggle()
-            let success = await WebRequest.requestLike(aid: aid, like: likeButton.isOn)
-            if !success {
-                likeButton.isOn.toggle()
+            let target = likeButton.isOn
+            do {
+                try await WebRequest.requestLike(aid: aid, like: target)
+            } catch {
+                // 失败还原状态并说明原因，别静默吞掉（用户显式动作）
+                likeButton.isOn = !target
+                if likeButton.isOn {
+                    likeButton.title? += 1
+                } else {
+                    likeButton.title? -= 1
+                }
+                presentAlert(title: "点赞失败", message: error.localizedDescription)
             }
         }
     }
@@ -544,24 +603,55 @@ class VideoDetailViewController: UIViewController {
         alert.addAction(UIAlertAction(title: "1", style: .default) { [weak self] _ in
             guard let self else { return }
             self.coinButton.title? += 1
-            if !self.likeButton.isOn {
+            let addedLikeForCoin = !self.likeButton.isOn
+            if addedLikeForCoin {
                 self.likeButton.title? += 1
                 self.likeButton.isOn = true
             }
             self.didSentCoins += 1
-            WebRequest.requestCoin(aid: aid, num: 1)
+            Task { [weak self] in
+                do {
+                    try await WebRequest.requestCoin(aid: aid, num: 1)
+                } catch {
+                    await MainActor.run {
+                        guard let self else { return }
+                        self.coinButton.title? -= 1
+                        self.didSentCoins -= 1
+                        if addedLikeForCoin {
+                            self.likeButton.title? -= 1
+                            self.likeButton.isOn = false
+                        }
+                        self.presentAlert(title: "投币失败", message: error.localizedDescription)
+                    }
+                }
+            }
         })
         if didSentCoins == 0 {
             alert.addAction(UIAlertAction(title: "2", style: .default) { [weak self] _ in
                 guard let self else { return }
                 self.coinButton.title? += 2
-                if !self.likeButton.isOn {
+                let addedLikeForCoin = !self.likeButton.isOn
+                if addedLikeForCoin {
                     self.likeButton.title? += 1
                     self.likeButton.isOn = true
                 }
-                self.likeButton.isOn = true
                 self.didSentCoins += 2
-                WebRequest.requestCoin(aid: aid, num: 2)
+                Task { [weak self] in
+                    do {
+                        try await WebRequest.requestCoin(aid: aid, num: 2)
+                    } catch {
+                        await MainActor.run {
+                            guard let self else { return }
+                            self.coinButton.title? -= 2
+                            self.didSentCoins -= 2
+                            if addedLikeForCoin {
+                                self.likeButton.title? -= 1
+                                self.likeButton.isOn = false
+                            }
+                            self.presentAlert(title: "投币失败", message: error.localizedDescription)
+                        }
+                    }
+                }
             })
         }
         alert.addAction(UIAlertAction(title: "取消", style: .cancel))
@@ -570,26 +660,48 @@ class VideoDetailViewController: UIViewController {
 
     @IBAction func actionFavorite(_ sender: Any) {
         Task { [weak self] in
-            guard let favList = try? await WebRequest.requestFavVideosList() else {
+            guard let self else { return }
+            let favList: [FavListData]
+            do {
+                favList = try await WebRequest.requestFavVideosList()
+            } catch {
+                self.presentAlert(title: "收藏夹列表获取失败", message: error.localizedDescription)
                 return
             }
-            let aid = self?.aid ?? 0
-            if self?.favButton.isOn == true {
-                self?.favButton.title? -= 1
-                self?.favButton.isOn = false
-                WebRequest.removeFavorite(aid: aid, mid: favList.map { $0.id })
+            let aid = self.aid
+            if self.favButton.isOn {
+                self.favButton.title? -= 1
+                self.favButton.isOn = false
+                Task { [weak self] in
+                    do {
+                        try await WebRequest.removeFavorite(aid: aid, mid: favList.map { $0.id })
+                    } catch {
+                        self?.favButton.title? += 1
+                        self?.favButton.isOn = true
+                        self?.presentAlert(title: "取消收藏失败", message: error.localizedDescription)
+                    }
+                }
                 return
             }
             let alert = UIAlertController(title: "收藏", message: nil, preferredStyle: .actionSheet)
             for fav in favList {
-                alert.addAction(UIAlertAction(title: fav.title, style: .default) { _ in
-                    self?.favButton.title? += 1
-                    self?.favButton.isOn = true
-                    WebRequest.requestFavorite(aid: aid, mid: fav.id)
+                alert.addAction(UIAlertAction(title: fav.title, style: .default) { [weak self] _ in
+                    guard let self else { return }
+                    self.favButton.title? += 1
+                    self.favButton.isOn = true
+                    Task { [weak self] in
+                        do {
+                            try await WebRequest.requestFavorite(aid: aid, mid: fav.id)
+                        } catch {
+                            self?.favButton.title? -= 1
+                            self?.favButton.isOn = false
+                            self?.presentAlert(title: "收藏失败", message: error.localizedDescription)
+                        }
+                    }
                 })
             }
             alert.addAction(UIAlertAction(title: "取消", style: .cancel))
-            self?.present(alert, animated: true)
+            self.present(alert, animated: true)
         }
     }
 
@@ -597,8 +709,13 @@ class VideoDetailViewController: UIViewController {
         dislikeButton.isOn.toggle()
         let aid = aid
         let dislike = dislikeButton.isOn
-        Task {
-            try? await ApiRequest.requestDislike(aid: aid, dislike: dislike)
+        Task { [weak self] in
+            do {
+                try await ApiRequest.requestDislike(aid: aid, dislike: dislike)
+            } catch {
+                self?.dislikeButton.isOn = !dislike
+                self?.presentAlert(title: dislike ? "标记不喜欢失败" : "取消不喜欢失败", message: error.localizedDescription)
+            }
         }
     }
 }
@@ -611,11 +728,11 @@ extension VideoDetailViewController: UICollectionViewDelegate {
             pageCollectionView.scrollToItem(at: IndexPath(item: range.startIndex, section: 0), at: .left, animated: true)
         case pageCollectionView:
             let page = pages[indexPath.item]
-            let player = VideoPlayerViewController(playInfo: PlayInfo(aid: isBangumi ? page.page : aid, cid: page.cid, epid: page.epid, seasonId: seasonId, subType: subType, lastPlayCid: lastPlayCid, playTimeInSecond: playTimeInSecond, title: page.part))
+            let player = makeVideoPlayer(for: PlayInfo(aid: isBangumi ? page.page : aid, cid: page.cid, epid: page.epid, seasonId: seasonId, subType: subType, lastPlayCid: lastPlayCid, playTimeInSecond: playTimeInSecond, title: page.part))
 
             let seq = pages.map({ PlayInfo(aid: isBangumi ? $0.page : aid, cid: $0.cid, epid: $0.epid, seasonId: seasonId, subType: subType, title: $0.part) })
             if seq.count > 0 {
-                player.sequenceProvider = VideoSequenceProvider(seq: seq, currentIndex: indexPath.item)
+                player.sequenceProvider = VideoSequenceProvider(seq: seq, currentIndex: indexPath.item, kind: .episodes)
             }
             present(player, animated: true, completion: nil)
         case replysCollectionView:
@@ -627,7 +744,12 @@ extension VideoDetailViewController: UICollectionViewDelegate {
             if Settings.showRelatedVideoInCurrentVC {
                 aid = video.aid
                 cid = video.cid
-                Task { await fetchData() }
+                // UGC 合集是普通视频：必须清掉上一页可能残留的番剧标识，否则 fetchData 会走错分支。
+                epid = 0
+                seasonId = 0
+                isBangumi = false
+                subType = nil
+                reloadData()
             } else {
                 let detailVC = VideoDetailViewController.create(aid: video.aid, cid: video.cid)
                 detailVC.present(from: self)
@@ -637,7 +759,11 @@ extension VideoDetailViewController: UICollectionViewDelegate {
                 if Settings.showRelatedVideoInCurrentVC {
                     aid = video.aid
                     cid = video.cid
-                    Task { await fetchData() }
+                    epid = 0
+                    seasonId = 0
+                    isBangumi = false
+                    subType = nil
+                    reloadData()
                 } else {
                     let detailVC = VideoDetailViewController.create(aid: video.aid, cid: video.cid)
                     detailVC.present(from: self)

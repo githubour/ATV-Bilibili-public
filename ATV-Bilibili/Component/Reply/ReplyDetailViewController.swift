@@ -39,7 +39,8 @@ class ReplyDetailViewController: UIViewController {
 
         reply.content.pictures?.compactMap { URL(string: $0.img_src) }.forEach { url in
             let imageView = UIImageView()
-            imageView.kf.setImage(with: url)
+            // 评论图长宽比不定, 显示上限 500pt 高, 按 1000x500 的框降采样(等比缩进框内)
+            imageView.kf.setImage(with: url, options: .cover(width: 1000, height: 500))
             imageView.contentMode = .scaleAspectFit
             imageView.snp.makeConstraints { make in
                 make.height.lessThanOrEqualTo(500)
@@ -168,7 +169,8 @@ class ReplyDetailViewController: UIViewController {
             collectionView.snp.makeConstraints { make in
                 make.leading.trailing.equalToSuperview()
                 make.top.equalTo(self.buttonStackView.snp.bottom).offset(60)
-                make.height.width.equalTo(360)
+                // 水平方向已由 leading/trailing 决定；再固定 width 会与它们冲突
+                make.height.equalTo(360)
                 make.bottom.equalToSuperview()
             }
 
@@ -184,15 +186,12 @@ extension ReplyDetailViewController: UICollectionViewDataSource, UICollectionVie
 
     func collectionView(_ collectionView: UICollectionView, cellForItemAt indexPath: IndexPath) -> UICollectionViewCell {
         guard let cell = collectionView.dequeueReusableCell(withReuseIdentifier: ReplyCell.identifier, for: indexPath) as? ReplyCell else {
-            fatalError("cell not found")
+            return UICollectionViewCell()
         }
-
         guard let reply = reply.replies?[indexPath.row] else {
-            fatalError("reply not found")
+            return cell
         }
-
         cell.config(replay: reply)
-
         return cell
     }
 

@@ -44,6 +44,7 @@ final class FeaturedBrowserViewController: FeedFlowBrowserViewController {
 
 final class FeaturedFeedFlowDataSource: FeedFlowDataSource {
     let title = "推荐"
+    let playbackQueueKind: PlaybackQueueKind = .recommendationFeed
     let defaultPreviewHintText = "停留后自动预览，按确认键进入短视频流"
     let loadingHintText = "正在加载沉浸式推荐..."
     let emptyStateText = "当前可播放的短视频较少，请稍后重试"

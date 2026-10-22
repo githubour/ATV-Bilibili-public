@@ -24,7 +24,8 @@ enum PlayerMediaFactory {
                         playerInfo: PlayerInfo?,
                         maxQuality: Int? = nil,
                         streamIndex: Int? = nil,
-                        preferredHost: String? = nil) async throws -> PreparedPlayerMedia
+                        preferredHost: String? = nil,
+                        transportMode: MediaTransportMode = .direct) async throws -> PreparedPlayerMedia
     {
         let playURL = URL(string: BilibiliVideoResourceLoaderDelegate.URLs.play)!
         let headers: [String: String] = [
@@ -38,7 +39,8 @@ enum PlayerMediaFactory {
                              aid: aid,
                              maxQuality: maxQuality,
                              streamIndex: streamIndex,
-                             preferredHost: preferredHost)
+                             preferredHost: preferredHost,
+                             transportMode: transportMode)
         asset.resourceLoader.setDelegate(delegate, queue: DispatchQueue(label: "loader.\(aid).\(UUID().uuidString)"))
         try Task.checkCancellation()
         let playable = try await asset.load(.isPlayable)
@@ -57,9 +59,12 @@ actor PlayerMediaWarmupManager {
     private let maxPreparedEntries = 4
     private let playContextCache: PlayContextCache
     private var prepared = [String: PreparedPlayerMedia]()
+    private var preparedAt = [String: Date]()
     private var inFlight = [String: InFlight<PreparedPlayerMedia, Error>]()
     private var accessOrder = LRUOrder<String>()
     private var cancellationGeneration = 0
+    /// 预热资源同样持有带时效的 playurl，不能只靠 LRU 无限期复用
+    private let maxPreparedAge: TimeInterval = 20 * 60
 
     init(playContextCache: PlayContextCache) {
         self.playContextCache = playContextCache
@@ -74,10 +79,16 @@ actor PlayerMediaWarmupManager {
         let resolvedPlayInfo = try await PlayInfoResolver.resolve(playInfo)
         try Task.checkCancellation()
         guard cancellationGeneration == generation else { throw CancellationError() }
-        let key = resolvedPlayInfo.sequenceKey
-        if let cached = prepared[key] {
+        // 传输模式纳入缓存身份：直连与代理资源不得复用。创建任务时固定快照，
+        // 开关只影响新建会话，已准备的旧模式资产保持原生命周期。
+        let transportSnapshot: MediaTransportMode = Settings.multiCDNEnabled ? .accelerated : .direct
+        let key = resolvedPlayInfo.sequenceKey + "#" + transportCacheKey(for: transportSnapshot)
+        if let cached = prepared[key], isFreshPrepared(key) {
             accessOrder.touch(key)
             return cached
+        } else if prepared[key] != nil {
+            prepared[key] = nil
+            preparedAt[key] = nil
         }
         if let entry = inFlight[key] {
             return try await resolve(entry, for: key)
@@ -90,7 +101,8 @@ actor PlayerMediaWarmupManager {
             return try await PlayerMediaFactory.prepare(
                 aid: resolvedPlayInfo.aid,
                 urlInfo: snapshot.videoPlayURLInfo,
-                playerInfo: snapshot.playerInfo
+                playerInfo: snapshot.playerInfo,
+                transportMode: transportSnapshot
             )
         })
 
@@ -101,7 +113,7 @@ actor PlayerMediaWarmupManager {
     private func resolve(_ entry: InFlight<PreparedPlayerMedia, Error>, for key: String) async throws -> PreparedPlayerMedia {
         do {
             let media = try await entry.task.value
-            if let cached = prepared[key] {
+            if let cached = prepared[key], isFreshPrepared(key) {
                 accessOrder.touch(key)
                 return cached
             }
@@ -110,6 +122,7 @@ actor PlayerMediaWarmupManager {
             }
             inFlight[key] = nil
             prepared[key] = media
+            preparedAt[key] = Date()
             accessOrder.touch(key)
             trimToCapacity()
             return media
@@ -126,12 +139,28 @@ actor PlayerMediaWarmupManager {
         inFlight.values.forEach { $0.task.cancel() }
         inFlight.removeAll()
         prepared.removeAll()
+        preparedAt.removeAll()
         accessOrder.clear()
+    }
+
+    /// 预热资产同样持有带时效的 playurl：无时间戳或超龄即视为未准备
+    private func isFreshPrepared(_ key: String) -> Bool {
+        guard let at = preparedAt[key] else { return false }
+        return Date().timeIntervalSince(at) <= maxPreparedAge
+    }
+
+    private func transportCacheKey(for mode: MediaTransportMode) -> String {
+        switch mode {
+        case .direct: return "direct"
+        case .proxy: return "proxy"
+        case .accelerated: return "accel"
+        }
     }
 
     private func trimToCapacity() {
         while prepared.count > maxPreparedEntries, let key = accessOrder.popOldest() {
             prepared[key] = nil
+            preparedAt[key] = nil
         }
     }
 }

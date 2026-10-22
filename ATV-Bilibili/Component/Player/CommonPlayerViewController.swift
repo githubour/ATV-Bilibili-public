@@ -8,6 +8,56 @@
 import AVKit
 import UIKit
 
+/// Menu/返回键防误触判定：tvOS 在进度条收起动画期间可能把 Menu 直接交给
+/// shouldDismiss，用户以为进度条还开着而按返回时就会整场退出。
+/// 规则：进度条可见时第一次 Menu 只收起进度条；进度条收起后极短时间内的第一次
+/// Menu 也按「收起进度条」吞掉，之后再按才真正退出。
+struct MenuDismissGuard {
+    static let defaultGraceInterval: CFTimeInterval = 1.0
+
+    private(set) var isTransportBarVisible = false
+    private let graceInterval: CFTimeInterval
+    private var transportBarHiddenAt: CFTimeInterval?
+    private var hasShieldedPressWhileVisible = false
+    private var hasShieldedPressSinceHide = false
+    private var lastVisibleShieldAt: CFTimeInterval = -Double.infinity
+
+    init(graceInterval: CFTimeInterval = Self.defaultGraceInterval) {
+        self.graceInterval = graceInterval
+    }
+
+    mutating func updateTransportBarVisibility(_ visible: Bool, now: CFTimeInterval) {
+        guard visible != isTransportBarVisible else { return }
+        isTransportBarVisible = visible
+        if visible {
+            transportBarHiddenAt = nil
+            hasShieldedPressWhileVisible = false
+            hasShieldedPressSinceHide = false
+        } else {
+            transportBarHiddenAt = now
+            hasShieldedPressWhileVisible = false
+            // 收起紧跟在被吞掉的可见态按键之后，说明是用户自己按键收起的，下一次 Menu 应正常退出
+            hasShieldedPressSinceHide = now - lastVisibleShieldAt < graceInterval
+        }
+    }
+
+    /// 返回 true 表示这次 Menu 只用于收起/兜底进度条，不应退出播放器
+    mutating func shouldShieldDismissPress(now: CFTimeInterval) -> Bool {
+        if isTransportBarVisible {
+            guard !hasShieldedPressWhileVisible else { return false }
+            hasShieldedPressWhileVisible = true
+            lastVisibleShieldAt = now
+            return true
+        }
+        guard !hasShieldedPressSinceHide,
+              let hiddenAt = transportBarHiddenAt,
+              now - hiddenAt < graceInterval
+        else { return false }
+        hasShieldedPressSinceHide = true
+        return true
+    }
+}
+
 class CommonPlayerViewController: UIViewController {
     private let playerVC = AVPlayerViewController()
     private var activePlugins = [CommonPlayerPlugin]()
@@ -18,6 +68,7 @@ class CommonPlayerViewController: UIViewController {
     private var playbackStalledObserver: Any?
     private var isEnd = false
     private var isRestoringFromPip = false
+    private var menuDismissGuard = MenuDismissGuard()
     /// 新 AVPlayerItem ready 后是否自动 play。换 CDN host 等场景可临时关掉，由调用方按用户暂停状态决定是否续播。
     var autoPlayWhenReady = true
     var showsPlaybackControls = true
@@ -68,15 +119,6 @@ class CommonPlayerViewController: UIViewController {
         if playerVC.transportBarCustomMenuItems.isEmpty == false {
             updateMenus()
         }
-    }
-
-    func removePlugin(plugin: CommonPlayerPlugin) {
-        let removingPlugins = activePlugins.filter { $0 == plugin }
-        removingPlugins.forEach { $0.playerWillCleanUp(playerVC: playerVC) }
-        if let player = playerVC.player {
-            removingPlugins.forEach { $0.playerDidCleanUp(player: player) }
-        }
-        activePlugins.removeAll { $0 == plugin }
     }
 
     func removeAllPlugins() {
@@ -182,23 +224,35 @@ extension CommonPlayerViewController {
         }
     }
 
+    /// AVPlayerItem.status 变化的主线程处理（KVO 回调线程不保证，收敛后再分发插件）
+    @MainActor
+    private func handleItemStatus(_ status: AVPlayerItem.Status) {
+        guard let player = playerVC.player else { return }
+        switch status {
+        case .readyToPlay:
+            isEnd = false
+            activePlugins.forEach { $0.playerWillStart(player: player) }
+            if autoPlayWhenReady {
+                player.play()
+            }
+        case .failed:
+            activePlugins.forEach { $0.playerDidFail(player: player) }
+            playerDidFail(player: player)
+        default:
+            break
+        }
+    }
+
     private func observePlayerItem(_ playerItem: AVPlayerItem) {
         activePlugins.forEach { $0.playerItemDidChange(playerItem: playerItem) }
         statusObserver = playerItem.observe(\.status, options: [.new, .old]) {
             [weak self] item, _ in
-            guard let self, let player = playerVC.player else { return }
-            switch item.status {
-            case .readyToPlay:
-                isEnd = false
-                activePlugins.forEach { $0.playerWillStart(player: player) }
-                if autoPlayWhenReady {
-                    player.play()
-                }
-            case .failed:
-                activePlugins.forEach { $0.playerDidFail(player: player) }
-                playerDidFail(player: player)
-            default:
-                break
+            // AVFoundation 不保证 status KVO 在主线程回调；本闭包触碰的 isEnd / activePlugins /
+            // autoPlayWhenReady 与各插件内部状态都是 MainActor 数据，先取值再跳主线程处理
+            // （与同文件 rateObserver 的 Task { @MainActor } 写法一致）
+            let status = item.status
+            Task { @MainActor [weak self] in
+                self?.handleItemStatus(status)
             }
         }
         if let playToEndObserver {
@@ -222,12 +276,17 @@ extension CommonPlayerViewController {
 
 extension CommonPlayerViewController: AVPlayerViewControllerDelegate {
     @objc func playerViewControllerShouldDismiss(_ playerViewController: AVPlayerViewController) -> Bool {
-        if let presentedViewController = UIViewController.topMostViewController() as? CommonPlayerViewController,
-           presentedViewController.playerVC == playerViewController
-        {
-            dismiss(animated: true)
+        guard let presentedViewController = UIViewController.topMostViewController() as? CommonPlayerViewController,
+              presentedViewController.playerVC == playerViewController
+        else { return false }
+
+        if menuDismissGuard.shouldShieldDismissPress(now: CACurrentMediaTime()) {
+            Logger.info("[Menu] 进度条可见/刚收起，本次返回只用于收起进度条")
+            presentToast("再按一次返回退出播放")
             return false
         }
+
+        dismiss(animated: true)
         return false
     }
 
@@ -245,6 +304,7 @@ extension CommonPlayerViewController: AVPlayerViewControllerDelegate {
                               willTransitionToVisibilityOfTransportBar visible: Bool,
                               with coordinator: AVPlayerViewControllerAnimationCoordinator)
     {
+        menuDismissGuard.updateTransportBarVisibility(visible, now: CACurrentMediaTime())
         activePlugins.forEach { $0.transportBarVisibilityWillChange(visible: visible) }
     }
 

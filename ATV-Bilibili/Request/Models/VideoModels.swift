@@ -77,6 +77,25 @@ struct VideoDetail: Codable, Hashable {
     let View: Info
     let Related: [Info]
     let Card: Owner
+
+    enum CodingKeys: String, CodingKey {
+        case View, Related, Card
+    }
+
+    init(View: Info, Related: [Info], Card: Owner) {
+        self.View = View
+        self.Related = Related
+        self.Card = Card
+    }
+
+    /// Related/Card 在某些稿件/风控响应里会缺失；不能因此让整个详情页解码失败。
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        View = try container.decode(Info.self, forKey: .View)
+        Related = try container.decodeIfPresent([Info].self, forKey: .Related) ?? []
+        Card = try container.decodeIfPresent(Owner.self, forKey: .Card)
+            ?? Owner(following: false, follower: nil)
+    }
 }
 
 extension VideoDetail: DisplayData {
@@ -157,6 +176,22 @@ struct PlayerInfo: Codable {
         last_play_time / 1000
     }
 
+    enum CodingKeys: String, CodingKey {
+        case last_play_time, subtitle, view_points, dm_mask, last_play_cid, is_upower_exclusive
+    }
+
+    /// 续播相关字段在部分稿件/账号下可能缺失；整块解码失败会连带丢掉字幕、
+    /// 章节和遮罩，所以这里只对这两个 Int 做 0 兜底，其余保持可选。
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        last_play_time = try container.decodeIfPresent(Int.self, forKey: .last_play_time) ?? 0
+        subtitle = try container.decodeIfPresent(SubtitleResp.self, forKey: .subtitle)
+        view_points = try container.decodeIfPresent([ViewPoint].self, forKey: .view_points)
+        dm_mask = try container.decodeIfPresent(MaskInfo.self, forKey: .dm_mask)
+        last_play_cid = try container.decodeIfPresent(Int.self, forKey: .last_play_cid) ?? 0
+        is_upower_exclusive = try container.decodeIfPresent(Bool.self, forKey: .is_upower_exclusive)
+    }
+
     class ViewPoint: Codable {
         let type: Int
         let from: TimeInterval
@@ -194,9 +229,6 @@ struct VideoPlayURLInfo: Codable {
         let end: CGFloat
         let clipType: String?
         let toastText: String?
-        var a11Tag: String {
-            "\(start)\(end)"
-        }
 
         var skipped: Bool? = false
 

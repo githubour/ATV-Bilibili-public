@@ -8,7 +8,15 @@
 import UIKit
 
 open class DanmakuCell: UIView {
-    public var model: DanmakuCellModel?
+    public var model: DanmakuCellModel? {
+        didSet {
+            // 位图缓存键由 cell 按当前绘制参数生成，model 变了就跟着换（弹幕池复用正是走这条路径）
+            (layer as? DanmakuAsyncLayer)?.cacheKey = displayCacheKey
+        }
+    }
+
+    /// 位图缓存键，nil = 不缓存。子类按自身绘制参数（文本/字号/颜色/描边/…）覆盖。
+    var displayCacheKey: String? { nil }
 
     public internal(set) var animationTime: TimeInterval = 0
 

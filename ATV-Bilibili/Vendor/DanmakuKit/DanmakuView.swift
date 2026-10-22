@@ -127,6 +127,11 @@ public class DanmakuView: UIView {
         }
     }
 
+    /// 同屏弹幕上限，0 = 不限。达到上限后新弹幕不再入场，按类型回调 `noSpaceShoot` / `noSpaceSync`。
+    /// 高密度稿件（每秒几十条）里，无限入场会让同屏 CALayer 与待渲染位图堆到几百个，
+    /// 既拖慢主线程也让播放帧率掉下来；限流优先保住正在播放的画面。默认不限，由使用方按需设置。
+    public var maxOnScreenCount: Int = 0
+
     /// All floating danmaku are removed immediately after set false, and it won't be launched again. Default is true.
     public var enableFloatingDanmaku: Bool = true {
         didSet {
@@ -194,6 +199,13 @@ public class DanmakuView: UIView {
         return bounds.height * displayArea
     }
 
+    /// 当前还在屏幕上的弹幕总数（三条轨道各自计数），用于 `maxOnScreenCount` 限流
+    private var onScreenDanmakuCount: Int {
+        floatingTracks.reduce(0) { $0 + $1.danmakuCount }
+            + topTracks.reduce(0) { $0 + $1.danmakuCount }
+            + bottomTracks.reduce(0) { $0 + $1.danmakuCount }
+    }
+
     override public init(frame: CGRect) {
         super.init(frame: frame)
         createPoolIfNeed()
@@ -238,6 +250,11 @@ public extension DanmakuView {
         case .bottom:
             guard enableBottomDanmaku else { return }
             guard !bottomTracks.isEmpty else { return }
+        }
+
+        guard maxOnScreenCount <= 0 || onScreenDanmakuCount < maxOnScreenCount else {
+            delegate?.danmakuView(self, noSpaceShoot: danmaku)
+            return
         }
 
         guard let cell = obtainCell(with: danmaku) else { return }
@@ -386,6 +403,12 @@ public extension DanmakuView {
             guard enableBottomDanmaku else { return }
             guard !bottomTracks.isEmpty else { return }
         }
+
+        guard maxOnScreenCount <= 0 || onScreenDanmakuCount < maxOnScreenCount else {
+            delegate?.danmakuView(self, noSpaceSync: danmaku)
+            return
+        }
+
         guard let cell = obtainCell(with: danmaku) else { return }
 
         let syncTrack: DanmakuTrack

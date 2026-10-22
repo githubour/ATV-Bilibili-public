@@ -98,6 +98,7 @@ final class AccountManager {
     }
 
     func setActiveAccount(mid: Int, applyingCookies: Bool = true, notify: Bool = true) {
+        let previousMID = withLock { activeMID }
         let switched = withLock {
             guard storedAccounts.contains(where: { $0.profile.mid == mid }) else { return false }
             activeMID = mid
@@ -114,12 +115,17 @@ final class AccountManager {
         if notify {
             notifyChange()
         }
+        // 真正换号（前后 mid 不同）才通知清理随账号走的缓存；同账号重复 set 不触发
+        if let previousMID, previousMID != mid {
+            NotificationCenter.default.post(name: .accountDidSwitch, object: self)
+        }
     }
 
-    func updateActiveAccount(token: LoginToken, cookies: [HTTPCookie]? = nil) {
+    /// 按 mid 更新 token/cookie，不依赖“完成时谁是活动账号”。
+    /// 刷新/换号并发时，异步结果必须回到发起刷新的那个账号，否则会把 A 的凭据写给 B。
+    func updateStoredAccountToken(mid: Int, token: LoginToken, cookies: [HTTPCookie]? = nil) {
         let didUpdate = withLock {
-            guard let mid = activeMID,
-                  let index = storedAccounts.firstIndex(where: { $0.profile.mid == mid }) else { return false }
+            guard let index = storedAccounts.firstIndex(where: { $0.profile.mid == mid }) else { return false }
             storedAccounts[index].token = token
             storedAccounts[index].lastActiveAt = Date()
             if let cookies {
@@ -175,6 +181,7 @@ final class AccountManager {
             storedAccounts.removeAll(where: { $0.profile.mid == account.profile.mid })
             persistAccounts()
         }
+        CookieHandler.shared.removeAccountCookies(mid: account.profile.mid)
         let removedActive = withLock { activeMID == account.profile.mid }
         if removedActive {
             withLock {
@@ -185,29 +192,28 @@ final class AccountManager {
             if let next {
                 setActiveAccount(mid: next.profile.mid)
             } else {
-                CookieHandler.shared.removeCookie()
+                CookieHandler.shared.activateAccount(mid: nil, cookies: [])
                 notifyChange()
             }
+            // 被移除的正是当前账号：清随账号走的缓存（前面已把 activeMID 置 nil，setActiveAccount 不会发此通知）
+            NotificationCenter.default.post(name: .accountDidSwitch, object: self)
         } else {
             notifyChange()
         }
         return withLock { !storedAccounts.isEmpty }
     }
 
-    func removeAllAccounts() {
-        withLock {
-            storedAccounts.removeAll()
-            persistAccounts()
-            activeMID = nil
-            persistActiveMID()
-        }
-        CookieHandler.shared.removeCookie()
+    /// 登录失效只做标记/通知，不删除账号。
+    /// 旧实现按“当前活动账号”删除，切号期间会把另一个号删掉；且 refresh_token
+    /// 尚可恢复时删号会直接丢凭据。返回该 mid 是否仍是当前活动账号，供调用方决定是否回登录页。
+    @discardableResult
+    func handleAuthenticationFailure(mid: Int?) -> Bool {
+        guard let mid,
+              withLock({ storedAccounts.contains(where: { $0.profile.mid == mid }) })
+        else { return false }
+        Logger.warn("[account] \(mid) 登录状态失效，保留账号等待重新登录")
         notifyChange()
-    }
-
-    func handleAuthenticationFailure() {
-        guard let account = withLock({ activeAccount }) else { return }
-        _ = removeAccount(account)
+        return withLock { activeMID == mid }
     }
 
     // MARK: - Private helpers
@@ -217,11 +223,15 @@ final class AccountManager {
     }
 
     private func applyActiveAccountCookies() {
-        guard let cookies = withLock({ activeAccount })?.cookies else { return }
-        CookieHandler.shared.replaceCookies(with: cookies)
+        let account = withLock({ activeAccount })
+        CookieHandler.shared.activateAccount(mid: account?.profile.mid,
+                                             cookies: account?.cookies ?? [])
     }
 
     private func loadFromStorage() {
+        // 旧版本把 cookie 写进 HTTPCookieStorage.shared；新版本改为自管后，
+        // 共享存储里的旧 cookie 仍可能被默认 URLSession/AF 会话带出，启动时清一次。
+        HTTPCookieStorage.shared.removeCookies(since: .distantPast)
         // 历史版本把账号列表明文放在 UserDefaults；读到即迁入 Keychain 并删除旧值
         if let data = KeychainStore.data(forKey: accountsKey) {
             storedAccounts = (try? JSONDecoder().decode([Account].self, from: data)) ?? []

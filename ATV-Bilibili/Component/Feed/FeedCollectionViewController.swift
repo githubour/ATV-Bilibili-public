@@ -105,6 +105,9 @@ class FeedCollectionViewController: UIViewController {
     var showHeader: Bool = false
     var headerText = ""
     var customHeaderConfig: FeedHeaderConfig?
+    /// 列表为空且已加载完成时显示的文案
+    var emptyStateText = "暂无内容"
+    private lazy var emptyLabel = UILabel.emptyState(emptyStateText)
 
     var displayDatas: [any DisplayData] {
         set {
@@ -118,12 +121,15 @@ class FeedCollectionViewController: UIViewController {
 
     /// 全量替换路径(setter)：重建判重集合与整表 snapshot
     private func replaceAll(_ wrapped: [AnyDisplayData]) {
+        isLoading = false
         _displayData = wrapped.uniqued()
         seenItems = Set(_displayData)
         var snapshot = NSDiffableDataSourceSnapshot<Section, AnyDisplayData>()
         snapshot.appendSections(Section.allCases)
         snapshot.appendItems(_displayData, toSection: .main)
         dataSource.apply(snapshot)
+        // 全量替换代表一次新请求开始，先藏起空态；请求结果由 appendData 决定是否显示
+        emptyLabel.isHidden = true
     }
 
     private var _displayData = [AnyDisplayData]()
@@ -145,6 +151,16 @@ class FeedCollectionViewController: UIViewController {
         vc.setContentScrollView(collectionView)
     }
 
+    /// 翻页失败时由调用方复位；否则 isLoading 会永久停在 true，列表再也不会触发 loadMore
+    func finishLoading() {
+        isLoading = false
+    }
+
+    private func updateEmptyState() {
+        emptyLabel.text = emptyStateText
+        emptyLabel.isHidden = !(_displayData.isEmpty && finished)
+    }
+
     func appendData(displayData: [any DisplayData]) {
         isLoading = false
         let newItems = displayData
@@ -158,8 +174,10 @@ class FeedCollectionViewController: UIViewController {
         }
         if displayData.count < pageSize - 5 || displayData.count == 0 {
             finished = true
+            updateEmptyState()
             return
         }
+        updateEmptyState()
 
         if _displayData.count < 12 {
             isLoading = true
@@ -176,6 +194,9 @@ class FeedCollectionViewController: UIViewController {
         }
         collectionView.dataSource = dataSource
         collectionView.delegate = self
+
+        view.addSubview(emptyLabel)
+        emptyLabel.makeConstraintsCenteredWithinSafeArea(of: view)
     }
 
     // MARK: - Private

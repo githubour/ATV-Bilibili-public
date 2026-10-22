@@ -8,7 +8,7 @@
 import Foundation
 import UIKit
 
-class CategoryViewController: UIViewController, BLTabBarContentVCProtocol {
+class CategoryViewController: UIViewController, BLTabBarContentVCProtocol, ChildContentContainer {
     struct CategoryDisplayModel {
         let title: String
         let contentVC: UIViewController
@@ -19,6 +19,9 @@ class CategoryViewController: UIViewController, BLTabBarContentVCProtocol {
     var categories = [CategoryDisplayModel]()
     let contentView = UIView()
     weak var currentViewController: UIViewController?
+    /// 分类为空时展示的文案（收藏页/排行榜可覆盖）
+    var emptyStateText = "暂无内容"
+    private lazy var emptyLabel = UILabel.emptyState(emptyStateText)
 
     /// 左侧分类侧栏宽度：排行榜这类两字短标题分类收窄给内容区让位，收藏页标题是收藏夹名可能很长，保持宽侧栏
     var sidebarWidth: CGFloat { 500 }
@@ -31,6 +34,13 @@ class CategoryViewController: UIViewController, BLTabBarContentVCProtocol {
     }
 
     func initTypeCollectionView() {
+        // 收藏页在"没有收藏夹 / 请求失败"时也会走到这里；空分类下
+        // 强制选中 index 0 会直接 categories[0] 越界。
+        guard !categories.isEmpty else {
+            showEmptyState()
+            return
+        }
+        emptyLabel.isHidden = true
         if typeCollectionView != nil {
             return
         }
@@ -55,19 +65,17 @@ class CategoryViewController: UIViewController, BLTabBarContentVCProtocol {
         collectionView(typeCollectionView, didSelectItemAt: IndexPath(item: 0, section: 0))
     }
 
-    func setViewController(vc: UIViewController) {
-        currentViewController?.willMove(toParent: nil)
-        currentViewController?.view.removeFromSuperview()
-        currentViewController?.removeFromParent()
-        currentViewController = vc
-        addChild(vc)
-        contentView.addSubview(vc.view)
-        vc.view.makeConstraintsToBindToSuperview()
-        vc.didMove(toParent: self)
+    private func showEmptyState() {
+        if emptyLabel.superview == nil {
+            view.addSubview(emptyLabel)
+            emptyLabel.makeConstraintsCenteredWithinSafeArea(of: view)
+        }
+        emptyLabel.text = emptyStateText
+        emptyLabel.isHidden = false
     }
 
     func reloadData() {
-        (currentViewController as? BLTabBarContentVCProtocol)?.reloadData()
+        forwardReloadToContentViewController()
     }
 }
 
@@ -85,6 +93,7 @@ extension CategoryViewController: UICollectionViewDataSource {
 
 extension CategoryViewController: UICollectionViewDelegate {
     func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
+        guard categories.indices.contains(indexPath.item) else { return }
         setViewController(vc: categories[indexPath.item].contentVC)
     }
 
@@ -92,7 +101,9 @@ extension CategoryViewController: UICollectionViewDelegate {
         if Settings.sideMenuAutoSelectChange == false {
             return
         }
-        guard let nextFocusedIndexPath = context.nextFocusedIndexPath else {
+        guard let nextFocusedIndexPath = context.nextFocusedIndexPath,
+              categories.indices.contains(nextFocusedIndexPath.item)
+        else {
             return
         }
         let categoryModel = categories[nextFocusedIndexPath.item]

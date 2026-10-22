@@ -43,29 +43,3 @@ struct LossyInt: Codable, Hashable {
         }
     }
 }
-
-/// 兼容 Int / String 两种返回形式的 Int，缺失时回退 0
-@propertyWrapper
-struct LossyIntOrZero: Codable, Hashable {
-    let wrappedValue: Int
-
-    init(wrappedValue: Int) {
-        self.wrappedValue = wrappedValue
-    }
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.singleValueContainer()
-        if let value = try? container.decode(Int.self) {
-            wrappedValue = value
-        } else if let string = try? container.decode(String.self) {
-            wrappedValue = Int(string) ?? 0
-        } else {
-            wrappedValue = 0
-        }
-    }
-
-    func encode(to encoder: Encoder) throws {
-        var container = encoder.singleValueContainer()
-        try container.encode(wrappedValue)
-    }
-}

@@ -39,17 +39,19 @@ enum SidxParseUtil {
             var size = UInt64(data.getUint32(offset: &offset))
             let typeArr = data.getUint32(offset: &offset).toUInt8s
             guard let typeString = String(bytes: typeArr, encoding: .utf8) else { return nil }
+            var headerSize: UInt64 = 8
             if size == 1 {
                 // 64 位扩展长度本身占 8 字节，读取前校验边界
                 guard offset + 8 <= UInt64(data.count) else { return nil }
-                size = data.getValue(type: UInt64.self, offset: &offset)
+                size = data.getValue(type: UInt64.self, offset: &offset).bigEndian
+                headerSize = 16
             }
-            // size 含 8 字节头；防御 0/负值下的 UInt64 下溢与超 Int.max 的转换 trap
-            guard size >= 8, size <= UInt64(Int.max) else { return nil }
+            // size 含 box 头；防御 0/负值下的 UInt64 下溢与超 Int.max 的转换 trap
+            guard size >= headerSize, size <= UInt64(Int.max) else { return nil }
             switch typeString {
             case "sidx":
-                // size includes the 8-byte header (4 size + 4 type)
-                let boxDataSize = Int(size) - 8
+                // size includes the box header (8 bytes, or 16 for 64-bit size)
+                let boxDataSize = Int(size - headerSize)
                 let endIndex = Int(offset) + boxDataSize
 
                 guard endIndex <= data.count else {
@@ -60,7 +62,7 @@ enum SidxParseUtil {
                 sidx = parsed
                 offset += UInt64(boxDataSize)
             default:
-                offset += (size - 8)
+                offset += (size - headerSize)
             }
         }
         return sidx
@@ -118,10 +120,6 @@ enum SidxParseUtil {
 extension Data {
     func getUint32(offset: inout UInt64) -> UInt32 {
         getValue(type: UInt32.self, offset: &offset).bigEndian
-    }
-
-    func getUint8(offset: inout UInt64) -> UInt8 {
-        getValue(type: UInt8.self, offset: &offset).bigEndian
     }
 
     func getValue<T>(type: T.Type, offset: inout UInt64) -> T {

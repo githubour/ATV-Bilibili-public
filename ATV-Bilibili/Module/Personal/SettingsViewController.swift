@@ -153,7 +153,7 @@ class SettingsViewController: UIViewController {
             }
 
             SectionModel(title: "界面") {
-                Navigation(title: "自定义Tab栏", desp: "") { [weak self] in
+                Navigation(title: "自定义 Tab 栏", desp: "") { [weak self] in
                     let controller = TabBarCustomizationViewController()
                     self?.present(controller, animated: true)
                 }
@@ -171,7 +171,7 @@ class SettingsViewController: UIViewController {
                        setting: Settings.directlyEnterVideo,
                        onChange: Settings.directlyEnterVideo.toggle())
 
-                Actions(title: "视频详情相关推荐加载模式", message: "4k以上需要大会员",
+                Actions(title: "视频详情相关推荐加载模式", message: "选择在详情页内刷新，或打开新页面",
                         current: Settings.showRelatedVideoInCurrentVC ? "页面刷新" : "新页面中打开",
                         options: [true, false],
                         optionString: ["页面刷新", "新页面中打开"])
@@ -220,7 +220,17 @@ class SettingsViewController: UIViewController {
                 {
                     Settings.mediaPlayerSpeed = $0
                 }
-                Toggle(title: "Avc优先(卡顿尝试开启)", setting: Settings.preferAvc, onChange: Settings.preferAvc.toggle())
+                Actions(title: "字幕起播",
+                        message: "先在播放器字幕菜单里选一条轨；开启后新视频自动沿用上次选择",
+                        current: Settings.subtitleAutoSelect && !Settings.subtitlePreferLan.isEmpty
+                            ? "自动显示上次选择" : "关闭",
+                        options: [false, true],
+                        optionString: ["关闭", "自动显示上次选择"])
+                {
+                    Settings.subtitleAutoSelect = $0
+                }
+                Toggle(title: "AVC 优先（卡顿时可尝试开启）", setting: Settings.preferAvc, onChange: Settings.preferAvc.toggle())
+                Toggle(title: "多 CDN 并发加速", setting: Settings.multiCDNEnabled, onChange: Settings.multiCDNEnabled.toggle())
                 Toggle(title: "无损音频和杜比全景声", setting: Settings.losslessAudio, onChange: Settings.losslessAudio.toggle())
                 Toggle(title: "匹配视频内容", setting: Settings.contentMatch, onChange: Settings.contentMatch.toggle())
                 Toggle(title: "仅在HDR视频匹配视频内容", setting: Settings.contentMatchOnlyInHDR, onChange: Settings.contentMatchOnlyInHDR.toggle())
@@ -256,16 +266,17 @@ class SettingsViewController: UIViewController {
                         update()
                     }
                 }
-                TextField(title: "添加本地屏蔽词", message: "新增关键字屏蔽(大小写不敏感)，随「用户自定义弹幕屏蔽」开关一起生效",
-                          current: "", placeholder: "输入要屏蔽的关键字")
+                TextField(title: "添加本地屏蔽词", message: "可一次粘贴多条：用空格 / 换行 / 逗号分隔。关键字大小写不敏感；正则用 /…/ 包裹，如 /透一下|我赌/(正则内不要有空格)。随「用户自定义弹幕屏蔽」开关一起生效",
+                          current: "", placeholder: "关键字，或 /正则/，可批量粘贴")
                 { word in
                     guard let word else { return }
-                    VideoDanmakuFilter.shared.addLocalFilter(word)
+                    VideoDanmakuFilter.shared.importLocalFilters(from: word)
                 }
                 CellModel(title: "管理本地屏蔽词", desp: "\(VideoDanmakuFilter.shared.localFilterCount) 条") { [weak self] update in
                     self?.presentLocalFilterManageAlert(onChange: update)
                 }
                 Toggle(title: "移除重复弹幕", setting: Settings.enableDanmakuRemoveDup, onChange: Settings.enableDanmakuRemoveDup.toggle())
+                Toggle(title: "合并重复弹幕", setting: Settings.danmakuMergeDuplicates, onChange: Settings.danmakuMergeDuplicates.toggle())
                 Actions(title: "弹幕大小", message: "默认为36", current: Settings.danmakuSize.title, options: DanmakuSize.allCases, optionString: DanmakuSize.allCases.map({ $0.title })) {
                     Settings.danmakuSize = $0
                 }
@@ -276,8 +287,8 @@ class SettingsViewController: UIViewController {
                 {
                     Settings.danmakuArea = $0
                 }
-                Toggle(title: "智能防档弹幕", setting: Settings.danmakuMask, onChange: Settings.danmakuMask.toggle())
-                Toggle(title: "按需本地运算智能防档弹幕(Exp)", setting: Settings.vnMask, onChange: Settings.vnMask.toggle())
+                Toggle(title: "智能防挡弹幕", setting: Settings.danmakuMask, onChange: Settings.danmakuMask.toggle())
+                Toggle(title: "按需本地运算智能防挡弹幕（实验性）", setting: Settings.vnMask, onChange: Settings.vnMask.toggle())
 
                 // 添加弹幕透明度设置
                 Actions(title: "弹幕透明度", message: "调整弹幕的透明度",

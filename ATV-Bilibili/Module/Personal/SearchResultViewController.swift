@@ -18,7 +18,12 @@ class SearchResultViewController: UIViewController {
         case video(SearchResult.Video)
         case bangumi(SearchResult.Bangumi)
         case user(SearchResult.User)
+        case spaceVideo(SpaceSearchVideo)
     }
+
+    /// 空间内搜索：非空时只在该 UP 主的稿件里搜索，结果也只展示视频
+    var spaceMid: Int?
+    var spaceOwnerName: String?
 
     @Published var searchText: String = ""
     private var cancellables = Set<AnyCancellable>()
@@ -26,6 +31,9 @@ class SearchResultViewController: UIViewController {
     private var showHistorySuggest = false
     private let hotSuggestLimit = 6
     private var hotSuggestsCache: [SuggestEntry] = []
+    private var lastSearchKey = ""
+    private var hasSearched = false
+    private lazy var emptyLabel = UILabel.emptyState("")
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -37,6 +45,8 @@ class SearchResultViewController: UIViewController {
         collectionView.snp.makeConstraints { make in
             make.edges.equalToSuperview()
         }
+        view.addSubview(emptyLabel)
+        emptyLabel.makeConstraintsCenteredWithinSafeArea(of: view)
         configureDataSource()
 
         $searchText
@@ -54,13 +64,36 @@ class SearchResultViewController: UIViewController {
 
     @MainActor
     private func performSearch(key: String) async {
+        lastSearchKey = key
+        hasSearched = true
         do {
-            let searchResult = try await WebRequest.requestSearchResult(key: key)
-            updateSnapshot(searchResult: searchResult)
+            if let spaceMid {
+                let videos = try await WebRequest.requestUpSpaceSearch(mid: spaceMid, keyword: key)
+                updateSpaceSnapshot(videos: videos)
+            } else {
+                let searchResult = try await WebRequest.requestSearchResult(key: key)
+                updateSnapshot(searchResult: searchResult)
+            }
         } catch {
             // 失败时保留上一次结果，只提示，不显示成「无结果」
             presentError(error, title: "搜索失败")
         }
+    }
+
+    /// 空间内搜索结果的快照：只有一个视频分区
+    @MainActor
+    private func updateSpaceSnapshot(videos: [SpaceSearchVideo]) {
+        currentSnapshot.deleteAllItems()
+        dataSource.apply(currentSnapshot)
+
+        let defaultHeight = NSCollectionLayoutDimension.fractionalWidth(Settings.displayStyle == .large ? 0.26 : 0.2)
+        let title = spaceOwnerName.map { "\($0) 的视频" } ?? "视频"
+        let list = SearchList(title: title, height: defaultHeight, scrollingBehavior: .continuous)
+        currentSnapshot.appendSections([list])
+        currentSnapshot.appendItems(videos.map { .spaceVideo($0) }, toSection: list)
+
+        dataSource.apply(currentSnapshot)
+        updateEmptyState()
     }
 
     @MainActor
@@ -97,6 +130,17 @@ class SearchResultViewController: UIViewController {
         }
 
         dataSource.apply(currentSnapshot)
+        updateEmptyState()
+    }
+
+    private func updateEmptyState() {
+        guard hasSearched else {
+            emptyLabel.isHidden = true
+            return
+        }
+        let isEmpty = currentSnapshot.numberOfItems == 0
+        emptyLabel.text = "没有找到与「\(lastSearchKey)」相关的内容"
+        emptyLabel.isHidden = !isEmpty
     }
 }
 
@@ -170,6 +214,8 @@ extension SearchResultViewController {
                 return collectionView.dequeueConfiguredReusableCell(using: displayCell, for: indexPath, item: item)
             case let .user(item):
                 return collectionView.dequeueConfiguredReusableCell(using: userCell, for: indexPath, item: item)
+            case let .spaceVideo(item):
+                return collectionView.dequeueConfiguredReusableCell(using: displayCell, for: indexPath, item: item)
             }
         }
 
@@ -206,6 +252,9 @@ extension SearchResultViewController: UICollectionViewDelegate {
             let upSpaceVC = UpSpaceViewController()
             upSpaceVC.mid = data.mid
             present(upSpaceVC, animated: true)
+        case let .spaceVideo(data):
+            let detailVC = VideoDetailViewController.create(aid: data.aid, cid: 0)
+            detailVC.present(from: self)
         }
     }
 
@@ -217,8 +266,8 @@ extension SearchResultViewController: UICollectionViewDelegate {
     }
 
     func collectionView(_ collectionView: UICollectionView, didUpdateFocusIn context: UICollectionViewFocusUpdateContext, with coordinator: UIFocusAnimationCoordinator) {
-        // 从搜索框进入结果查看时，认为本搜索词是用户想要的，保存搜索历史
-        if context.previouslyFocusedIndexPath == nil && context.nextFocusedIndexPath != nil {
+        // 从搜索框进入结果查看时，认为本搜索词是用户想要的，保存搜索历史（空间内搜索不写入全局历史）
+        if spaceMid == nil, context.previouslyFocusedIndexPath == nil, context.nextFocusedIndexPath != nil {
             Settings.addHistory(searchText)
         }
     }
@@ -230,6 +279,9 @@ extension SearchResultViewController: UISearchResultsUpdating {
         if let text = searchController.searchBar.text {
             searchText = text
         }
+
+        // 空间内搜索不做全局联想/热搜，直接交给 debounce 触发请求
+        if spaceMid != nil { return }
 
         if let text = searchController.searchBar.text, !text.isEmpty {
             showHistorySuggest = false
@@ -311,6 +363,49 @@ extension WebRequest {
 
     static func requestSearchHotMobile(limit: Int) async throws -> SearchHotMobileResult {
         try await request(url: EndPoint.searchTrending, parameters: ["limit": limit])
+    }
+
+    /// 空间内搜索：仅返回该 UP 主名下的稿件（web 端 arc/search，WBI 由 WebRequest 自动签名）
+    static func requestUpSpaceSearch(mid: Int, keyword: String, page: Int = 1, pageSize: Int = 20) async throws -> [SpaceSearchVideo] {
+        struct Resp: Decodable {
+            struct VideoList: Decodable { let vlist: [SpaceSearchVideo] }
+            let list: VideoList
+        }
+
+        let resp: Resp = try await request(
+            method: .get,
+            url: EndPoint.spaceArcSearch,
+            parameters: ["mid": mid, "keyword": keyword, "pn": page, "ps": pageSize, "order": "pubdate"]
+        )
+        return resp.list.vlist
+    }
+}
+
+/// 空间内搜索的单条结果：只保留卡片展示所需的字段。
+struct SpaceSearchVideo: Decodable, Hashable, DisplayData, PlayableData {
+    let aid: Int
+    let title: String
+    let author: String
+    let play: Int?
+    let video_review: Int?
+    let created: Int?
+    let length: String?
+    private let picURL: String
+
+    enum CodingKeys: String, CodingKey {
+        case aid, title, author, play, video_review, created, length
+        case picURL = "pic"
+    }
+
+    // PlayableData
+    var cid: Int { 0 }
+
+    // DisplayData
+    var ownerName: String { author }
+    var pic: URL? { URL(string: picURL)?.addSchemeIfNeed() }
+    var date: String? { DateFormatter.stringFor(timestamp: created) }
+    var overlay: DisplayOverlay? {
+        .video(play: play, danmaku: video_review, durationText: length)
     }
 }
 

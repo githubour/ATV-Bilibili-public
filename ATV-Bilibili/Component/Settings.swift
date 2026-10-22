@@ -78,12 +78,27 @@ enum Settings {
     @UserDefault(.preferAvc, defaultValue: true)
     static var preferAvc: Bool
 
+    /// 多 CDN 并发加速（默认关）。开启后点播走本地代理，多 CDN 并发 Range 下载聚合带宽。
+    @UserDefault(.multiCDNEnabled, defaultValue: false)
+    static var multiCDNEnabled: Bool
+
     @UserDefault(.danmakuMask, defaultValue: true)
     static var danmakuMask: Bool
 
-    /// 起播自动选中的字幕语言; ai-zh = AI 识别中文字幕, 空 = 不自动开启
-    @UserDefault(.subtitlePreferLan, defaultValue: "ai-zh")
+    /// 上次在播放器字幕菜单里选过的轨道 lan; 空 = 从未选过 / 已手动关闭。
+    /// 只表示"记住用户的选择", 是否在起播时自动挂上由 subtitleAutoSelect 决定
+    @UserDefault(.subtitlePreferLan, defaultValue: "")
     static var subtitlePreferLan: String
+
+    /// 起播是否自动挂上 subtitlePreferLan 指定的字幕轨道。默认关。
+    ///
+    /// 为什么要单独一个键: 老版本把 subtitlePreferLan 的默认值写成 "ai-zh" 并且已经落盘,
+    /// 而 `@UserDefault` 的 defaultValue 只对"键不存在"生效 —— 光改 default 对已安装用户
+    /// 完全无效, 旧值一直赢, 表现就是"什么都没操作, 字幕自己跳出来"。
+    /// 用独立开关表达"用户是否真的要自动字幕": 老用户设备上此键不存在 → 默认关 →
+    /// 历史遗留偏好被自然中和; 想要字幕的人在播放器菜单里选一次即可(会写回 true)。
+    @UserDefault(.subtitleAutoSelect, defaultValue: false)
+    static var subtitleAutoSelect: Bool
 
     @UserDefault(.vnMask, defaultValue: false)
     static var vnMask: Bool
@@ -152,7 +167,8 @@ enum Settings {
     @UserDefault(.followsFeedFlowEnabled, defaultValue: false)
     static var followsFeedFlowEnabled: Bool
 
-    @UserDefaultCodable(.enableSponsorBlock, defaultValue: SponsorBlockType.tip)
+    // 默认关闭：开启后会向第三方 bsbsb.top 发送视频 ID 的哈希前缀，需用户主动选择
+    @UserDefaultCodable(.enableSponsorBlock, defaultValue: SponsorBlockType.none)
     static var enableSponsorBlock: SponsorBlockType
 
     @UserDefault(.enableDanmakuFilter, defaultValue: true)
@@ -160,6 +176,11 @@ enum Settings {
 
     @UserDefault(.enableDanmakuRemoveDup, defaultValue: false)
     static var enableDanmakuRemoveDup: Bool
+
+    /// pakku 式重复弹幕合并：同文本 + 时间相邻的多条折叠为一条并标注 ×N。默认开。
+    /// 开启时优先于「移除重复弹幕」——重复内容折叠成 ×N 比直接抹掉更符合直觉。
+    @UserDefault(.danmakuMergeDuplicates, defaultValue: true)
+    static var danmakuMergeDuplicates: Bool
 
     @UserDefaultCodable(.topShelfSource, defaultValue: .all)
     static var topShelfSource: TopShelfSource
@@ -206,22 +227,50 @@ extension Settings {
 
 enum TopShelfSource: String, Codable, CaseIterable {
     case all
-    case dynamic
+    case history
     case toView
+    case dynamic
+    case continueAndToView
+    case allWithHistory
     case off
 
     var title: String {
         switch self {
         case .all:
             return "动态+稍后再看"
-        case .dynamic:
-            return "仅动态"
+        case .history:
+            return "仅继续观看"
         case .toView:
             return "仅稍后再看"
+        case .dynamic:
+            return "仅动态"
+        case .continueAndToView:
+            return "继续观看+稍后再看"
+        case .allWithHistory:
+            return "继续观看+动态+稍后再看"
         case .off:
             return "关闭"
         }
     }
+
+    /// 各档位要拉取的分区，避免刷新逻辑里散落一堆 || 判断
+    var sections: Set<TopShelfSection> {
+        switch self {
+        case .all: return [.toView, .dynamic]
+        case .history: return [.history]
+        case .toView: return [.toView]
+        case .dynamic: return [.dynamic]
+        case .continueAndToView: return [.history, .toView]
+        case .allWithHistory: return [.history, .toView, .dynamic]
+        case .off: return []
+        }
+    }
+}
+
+enum TopShelfSection: Hashable {
+    case history
+    case toView
+    case dynamic
 }
 
 enum SponsorBlockType: String, Codable, CaseIterable {
@@ -278,7 +327,16 @@ enum DanmakuSize: String, Codable, CaseIterable {
     }
 }
 
-enum DanmakuAlpha: Double, Codable, CaseIterable {
+/// 「档位滑杆」枚举的公共形状（透明度 / 描边宽度 / 描边透明度）：
+/// 数值集合各自定义，title 的展示格式统一从这里出，避免三份一样的实现随时间漂移
+/// （审核 2026-10-20 问题 16；rawValue 数值与 Codable 落盘格式保持不变）
+protocol DanmakuSliderLevel: RawRepresentable, CaseIterable where RawValue == Double {}
+
+extension DanmakuSliderLevel {
+    var title: String { String(format: "%.1f", rawValue) }
+}
+
+enum DanmakuAlpha: Double, Codable, CaseIterable, DanmakuSliderLevel {
     case alpha_03 = 0.3
     case alpha_04 = 0.4
     case alpha_05 = 0.5
@@ -287,25 +345,17 @@ enum DanmakuAlpha: Double, Codable, CaseIterable {
     case alpha_08 = 0.8
     case alpha_09 = 0.9
     case alpha_10 = 1.0
-
-    var title: String {
-        return String(format: "%.1f", rawValue)
-    }
 }
 
-enum DanmakuStrokeWidth: Double, Codable, CaseIterable {
+enum DanmakuStrokeWidth: Double, Codable, CaseIterable, DanmakuSliderLevel {
     case width_0 = 0.0
     case width_05 = 0.5
     case width_10 = 1.0
     case width_15 = 1.5
     case width_20 = 2.0
-
-    var title: String {
-        return String(format: "%.1f", rawValue)
-    }
 }
 
-enum DanmakuStrokeAlpha: Double, Codable, CaseIterable {
+enum DanmakuStrokeAlpha: Double, Codable, CaseIterable, DanmakuSliderLevel {
     case alpha_00 = 0.0
     case alpha_01 = 0.1
     case alpha_02 = 0.2
@@ -317,10 +367,6 @@ enum DanmakuStrokeAlpha: Double, Codable, CaseIterable {
     case alpha_08 = 0.8
     case alpha_09 = 0.9
     case alpha_10 = 1.0
-
-    var title: String {
-        return String(format: "%.1f", rawValue)
-    }
 }
 
 extension DanmakuArea {
@@ -397,6 +443,16 @@ enum MediaQualityEnum: Codable, CaseIterable {
     case quality_hdr_dolby
 }
 
+/// B 站画质档位号 (qn)。集中一处声明，避免散落硬编码后与枚举脱节
+/// （原先 `isHDR10` 直接写 `id == 125`，而 `MediaQualityEnum` 里根本没有 HDR case）。
+/// HDR10(125) / 杜比视界(126) 不是可选的"最高画质"档位，只用于识别取到的流，故不进枚举。
+enum QualityId {
+    static let hd1080p = 116
+    static let uhd4k = 120
+    static let hdr10 = 125
+    static let dolbyVision = 126
+}
+
 extension MediaQualityEnum {
     var desp: String {
         switch self {
@@ -412,11 +468,11 @@ extension MediaQualityEnum {
     var qn: Int {
         switch self {
         case .quality_1080p:
-            return 116
+            return QualityId.hd1080p
         case .quality_2160p:
-            return 120
+            return QualityId.uhd4k
         case .quality_hdr_dolby:
-            return 126
+            return QualityId.dolbyVision
         }
     }
 

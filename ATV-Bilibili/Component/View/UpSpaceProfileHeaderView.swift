@@ -1,5 +1,5 @@
 //
-//  UpSpaceTitleSupplementaryView.swift
+//  UpSpaceProfileHeaderView.swift
 //  ATV-Bilibili
 //
 //  Created by bitxeno on 2025/11/27.
@@ -8,17 +8,20 @@
 import SnapKit
 import UIKit
 
-class UpSpaceTitleSupplementaryView: UICollectionReusableView {
+/// UP 空间顶部资料卡。空间页改成固定头 + 投稿/合集切换后，它作为普通视图使用。
+class UpSpaceProfileHeaderView: UIView {
     let imageView = UIImageView()
     let nameLabel = UILabel()
     let despLabel = UILabel()
     let followButton = BLCustomButton()
-    let blockButton = BLCustomButton()
+    let searchButton = BLCustomButton()
     let sortButton = BLCustomButton()
     private let focusGuide = UIFocusGuide()
 
     var onFollowTapped: ((Bool) -> Void)?
-    var onBlockTapped: ((Bool) -> Void)?
+    /// 关注请求失败时回调；调用方负责展示提示
+    var onFollowFailed: ((String) -> Void)?
+    var onSearchTapped: (() -> Void)?
     var onSortTapped: ((Bool) -> Void)?
     var mid: Int?
 
@@ -37,16 +40,14 @@ class UpSpaceTitleSupplementaryView: UICollectionReusableView {
         addSubview(nameLabel)
         addSubview(despLabel)
         addSubview(followButton)
-        addSubview(blockButton)
+        addSubview(searchButton)
         addSubview(sortButton)
         addLayoutGuide(focusGuide)
 
         imageView.snp.makeConstraints { make in
             make.leading.equalToSuperview().offset(30)
             make.top.equalToSuperview()
-            make.bottom.equalToSuperview().offset(-30)
-            make.width.equalTo(imageView.snp.height)
-            make.width.equalTo(110)
+            make.width.height.equalTo(110)
         }
 
         nameLabel.snp.makeConstraints { make in
@@ -60,15 +61,15 @@ class UpSpaceTitleSupplementaryView: UICollectionReusableView {
             make.trailing.lessThanOrEqualTo(sortButton.snp.leading).offset(-40)
         }
 
-        blockButton.snp.makeConstraints { make in
+        searchButton.snp.makeConstraints { make in
             make.trailing.equalToSuperview().offset(-30)
             make.centerY.equalToSuperview()
-            make.width.equalTo(blockButton.snp.height).multipliedBy(20.5 / 18.0)
+            make.width.equalTo(searchButton.snp.height).multipliedBy(20.5 / 18.0)
             make.height.equalTo(80)
         }
 
         followButton.snp.makeConstraints { make in
-            make.trailing.equalTo(blockButton.snp.leading).offset(-20)
+            make.trailing.equalTo(searchButton.snp.leading).offset(-20)
             make.centerY.equalToSuperview()
             make.width.equalTo(followButton.snp.height).multipliedBy(20.5 / 18.0)
             make.height.equalTo(80)
@@ -88,14 +89,16 @@ class UpSpaceTitleSupplementaryView: UICollectionReusableView {
 
         followButton.image = UIImage(systemName: "heart")
         followButton.onImage = UIImage(systemName: "heart.fill")
+        followButton.accessibilityLabel = "关注 UP 主"
+        searchButton.accessibilityLabel = "搜索该 UP 主"
+        sortButton.accessibilityLabel = "切换投稿排序方式"
         followButton.onPrimaryAction = { [weak self] _ in
             self?.followButtonTapped()
         }
 
-        blockButton.image = UIImage(systemName: "slash.circle")
-        blockButton.onImage = UIImage(systemName: "person.crop.circle.badge.minus")
-        blockButton.onPrimaryAction = { [weak self] _ in
-            self?.blockButtonTapped()
+        searchButton.image = UIImage(systemName: "magnifyingglass")
+        searchButton.onPrimaryAction = { [weak self] _ in
+            self?.onSearchTapped?()
         }
 
         // isOn = 按播放量排序，off = 按最新发布
@@ -105,7 +108,7 @@ class UpSpaceTitleSupplementaryView: UICollectionReusableView {
             self?.sortButtonTapped()
         }
 
-        focusGuide.preferredFocusEnvironments = [sortButton, followButton, blockButton]
+        focusGuide.preferredFocusEnvironments = [sortButton, followButton, searchButton]
         focusGuide.snp.makeConstraints { make in
             make.leading.equalToSuperview()
             make.top.bottom.equalTo(sortButton)
@@ -124,20 +127,13 @@ class UpSpaceTitleSupplementaryView: UICollectionReusableView {
 
         guard let mid else { return }
         let follow = followButton.isOn
-        Task {
-            try? await WebRequest.follow(mid: mid, follow: follow)
-        }
-    }
-
-    @objc private func blockButtonTapped() {
-        blockButton.isOn.toggle()
-
-        guard let mid else { return }
-        let block = blockButton.isOn
-        Task { [weak self] in
-            try? await WebRequest.block(mid: mid, block: block)
-            await MainActor.run {
-                self?.onBlockTapped?(block)
+        Task { @MainActor [weak self] in
+            do {
+                try await WebRequest.follow(mid: mid, follow: follow)
+            } catch {
+                // 与详情页/播放器面板一致：失败回滚状态并提示，不能静默显示“已关注”
+                self?.followButton.isOn = !follow
+                self?.onFollowFailed?(error.localizedDescription)
             }
         }
     }

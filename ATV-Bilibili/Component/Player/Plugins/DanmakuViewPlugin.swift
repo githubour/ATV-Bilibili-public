@@ -82,9 +82,11 @@ extension DanmakuViewPlugin: CommonPlayerPlugin {
         // 保存新的 player 引用
         currentPlayer = player
 
-        // 添加新的 observer 并保存引用
+        // 添加新的 observer 并保存引用。
+        // 必须用主队列：provider 的游标/分段字典与 @MainActor 的网络回调共享，
+        // 放全局队列会构成并发读写（切集/快进时可能崩溃或串集）。
         timeObserver = player.addPeriodicTimeObserver(forInterval: CMTime(seconds: 1, preferredTimescale: 1),
-                                                      queue: DispatchQueue.global())
+                                                      queue: .main)
         { [weak self] time in
             guard let self else { return }
             if !Defaults.shared.showDanmaku { return }
@@ -118,6 +120,9 @@ extension DanmakuViewPlugin: CommonPlayerPlugin {
         danmakuView.paddingTop = 5
         danmakuView.trackHeight = 50
         danmakuView.displayArea = Settings.danmakuArea.percent
+        // 同屏上限：轨道按 50pt 高度铺满整屏也就 20 余条浮动轨，正常密度根本到不了 100；
+        // 只有爆款稿件的弹幕潮会冲破，此时宁可少入场几条，也不要让同屏 CALayer 堆到几百个拖慢播放
+        danmakuView.maxOnScreenCount = 100
         danmakuView.recaculateTracks()
     }
 
@@ -132,7 +137,7 @@ extension DanmakuViewPlugin: CommonPlayerPlugin {
     func addMenuItems(current: inout [UIMenuElement]) -> [UIMenuElement] {
         let danmakuImage = UIImage(systemName: "list.bullet.rectangle.fill")
         let danmakuImageDisable = UIImage(systemName: "list.bullet.rectangle")
-        let danmakuAction = UIAction(title: "Show Danmu", image: danmakuView.isHidden ? danmakuImageDisable : danmakuImage) {
+        let danmakuAction = UIAction(title: "显示弹幕", image: danmakuView.isHidden ? danmakuImageDisable : danmakuImage) {
             action in
             Defaults.shared.toggleShowDanmaku()
             action.image = Defaults.shared.showDanmaku ? danmakuImage : danmakuImageDisable

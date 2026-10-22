@@ -12,28 +12,36 @@ class FavoriteViewController: CategoryViewController {
 
     override func viewDidLoad() {
         categories = []
+        emptyStateText = "暂无收藏夹"
         super.viewDidLoad()
 
         Task {
-            // 用户创建的收藏夹
-            let favList = try? await WebRequest.requestFavVideosList()
-            if let favList {
+            // 并行拉取 + 失败提示：此前双 try? 吞错且串行 await，
+            // 未登录态失效/断网时页面静默渲染成空白，用户视角是「收藏夹丢了」
+            do {
+                async let own = WebRequest.requestFavVideosList()
+                async let collected = WebRequest.requestFavFolderCollectedList()
+                let (favList, favFolderCollectedList) = try await(own, collected)
+
+                // 用户创建的收藏夹
                 categories = favList.map {
                     return CategoryDisplayModel(title: $0.title, contentVC: FavoriteVideoContentViewController(info: $0))
                 }
-            }
 
-            // 用户收藏的订阅
-            let favFolderCollectedList = try? await WebRequest.requestFavFolderCollectedList()
-            if let favFolderCollectedList {
+                // 用户收藏的订阅
                 favFolderCollectedList
                     .filter { $0.mid != 0 }
                     .forEach {
                         categories.append(CategoryDisplayModel(title: $0.title, contentVC: FavoriteVideoContentViewController(info: $0)))
                     }
-            }
 
-            initTypeCollectionView()
+                initTypeCollectionView()
+            } catch {
+                categories = []
+                emptyStateText = "收藏夹加载失败，请稍后重试"
+                initTypeCollectionView()
+                presentAlert(title: "收藏夹加载失败", message: "\(error.localizedDescription)\n请检查登录状态后重进本页")
+            }
         }
     }
 }

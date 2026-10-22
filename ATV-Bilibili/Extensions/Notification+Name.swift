@@ -11,4 +11,6 @@ extension Notification.Name {
     static let tabBarPagesDidChange = Notification.Name("BLTabBarViewController.tabBarPagesDidChange")
     static let followsLayoutModeDidChange = Notification.Name("FollowsViewController.layoutModeDidChange")
     static let accountDidUpdate = Notification.Name("AccountManagerDidUpdate")
+    /// 仅在「切换到不同 mid 的账号」时发出，用于清理随账号走的缓存（弹幕云屏蔽词 / 头像图缓存）
+    static let accountDidSwitch = Notification.Name("AccountManagerDidSwitch")
 }

@@ -22,6 +22,7 @@ enum SettingsKey: String, CaseIterable {
     case preferAvc = "Settings.preferAvc"
     case danmakuMask = "Settings.danmuMask"
     case subtitlePreferLan = "Settings.subtitlePreferLan"
+    case subtitleAutoSelect = "Settings.subtitleAutoSelect"
     case vnMask = "Settings.vnMask"
     case contentMatch = "Settings.contentMatch"
     case contentMatchOnlyInHDR = "Settings.contentMatchOnlyInHDR"
@@ -46,6 +47,7 @@ enum SettingsKey: String, CaseIterable {
     case enableSponsorBlock = "Settings.SponsorBlockType"
     case enableDanmakuFilter = "Settings.danmuFilter"
     case enableDanmakuRemoveDup = "Settings.danmuRemoveDup"
+    case danmakuMergeDuplicates = "Settings.danmuMergeDup"
     case topShelfSource = "Settings.topShelfSource"
     case danmakuAlpha = "Settings.danmuAlpha"
     case danmakuStrokeWidth = "Settings.danmuStrokeWidth"
@@ -56,4 +58,5 @@ enum SettingsKey: String, CaseIterable {
     case danmakuFilters = "VideoDanmuFilter.filters"
     case localDanmakuFilters = "VideoDanmuFilter.localFilters"
     case danmakuFilterLastUpdate = "VideoDanmuFilter.lastUpdate"
+    case multiCDNEnabled = "Settings.multiCDNEnabled"
 }

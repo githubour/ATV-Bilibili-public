@@ -15,7 +15,7 @@ final class SettingsKeyContractTests: XCTestCase {
         "Settings.mediaQuality", "Settings.mediaPlayerSpeed", "Settings.danmuArea",
         "Settings.danmuSize", "Settings.danmuAILevel", "Settings.danmuDuration",
         "Settings.losslessAudio", "Settings.preferAvc", "Settings.danmuMask",
-        "Settings.subtitlePreferLan", "Settings.vnMask", "Settings.contentMatch",
+        "Settings.subtitlePreferLan", "Settings.subtitleAutoSelect", "Settings.vnMask", "Settings.contentMatch",
         "Settings.contentMatchOnlyInHDR", "Settings.continuePlay",
         "DLNA.uuid", "DLNA.enable",
         "Settings.continouslyPlay", // rawValue 里的历史拼写错误必须永久保留
@@ -27,10 +27,12 @@ final class SettingsKeyContractTests: XCTestCase {
         "Settings.featuredDurationLimit", "Settings.recommendFeedFlowEnabled",
         "Settings.featuredContentSafetyFilterEnabled", "Settings.followsFeedFlowEnabled",
         "Settings.SponsorBlockType", "Settings.danmuFilter", "Settings.danmuRemoveDup",
+        "Settings.danmuMergeDup",
         "Settings.topShelfSource", "Settings.danmuAlpha", "Settings.danmuStrokeWidth",
         "Settings.danmuStrokeAlpha", "Search.histories", "Settings.tabBarPagePlacements",
         "Settings.tabBarPlacement.favoriteToPersonalMigrated",
         "VideoDanmuFilter.filters", "VideoDanmuFilter.localFilters", "VideoDanmuFilter.lastUpdate",
+        "Settings.multiCDNEnabled",
     ]
 
     func test_settingsKeyRawValuesAreFrozen() {

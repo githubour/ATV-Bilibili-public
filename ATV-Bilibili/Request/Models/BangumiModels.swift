@@ -5,11 +5,6 @@
 
 import Foundation
 
-struct BangumiSeasonInfo: Codable {
-    let main_section: BangumiInfo
-    let section: [BangumiInfo]
-}
-
 struct BangumiInfo: Codable, Hashable {
     struct Episode: Codable, Hashable {
         let id: Int

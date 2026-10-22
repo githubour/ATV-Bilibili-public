@@ -30,6 +30,21 @@ class LoginViewController: UIViewController {
         return button
     }()
 
+    /// 从「我的 → 账号切换 → 添加账号」进入时提供返回入口；作为根登录页时为空
+    var onCancel: (() -> Void)?
+
+    private lazy var cancelButton: UIButton = {
+        var config = UIButton.Configuration.plain()
+        config.title = "返回"
+        config.image = UIImage(systemName: "chevron.left")
+        config.imagePadding = 8
+        let button = UIButton(configuration: config)
+        button.addTarget(self, action: #selector(actionCancel), for: .primaryActionTriggered)
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.isHidden = true
+        return button
+    }()
+
     private let leftContainerView: UIView = {
         let view = UIView()
         view.translatesAutoresizingMaskIntoConstraints = false
@@ -61,6 +76,8 @@ class LoginViewController: UIViewController {
         return label
     }()
 
+    private static let guideText = "1 请打开BiliBili官方手机客户端扫码登录\n\n2. 如果登录失败尝试点击重新生成二维码"
+
     private static let pollInterval: Duration = .seconds(4)
     private static let maxPollCount = 200
 
@@ -74,6 +91,11 @@ class LoginViewController: UIViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         setupUI()
+        cancelButton.isHidden = (onCancel == nil)
+    }
+
+    @objc private func actionCancel() {
+        onCancel?()
     }
 
     override func viewDidAppear(_ animated: Bool) {
@@ -132,15 +154,25 @@ class LoginViewController: UIViewController {
 
     func initValidation() {
         stopValidation()
+        qrcodeImageView.image = nil
+        guideLabel.textColor = .label
+        guideLabel.text = Self.guideText
         Task { [weak self] in
             guard let self else { return }
             do {
                 let qr = try await ApiRequest.requestLoginQR()
+                guard !Task.isCancelled else { return }
                 self.qrcodeImageView.image = self.generateQRCode(from: qr.url)
                 self.oauthKey = qr.authCode
                 self.startValidation()
             } catch {
+                guard !Task.isCancelled else { return }
                 Logger.warn("[login] 获取登录二维码失败: \(error)")
+                // 旧实现只写日志，界面停在空白二维码区；这里给可见错误与可聚焦的重试按钮。
+                self.guideLabel.textColor = .systemOrange
+                self.guideLabel.text = "二维码获取失败：\(error.localizedDescription)\n\n检查网络后点击「重新生成二维码」重试。"
+                self.setNeedsFocusUpdate()
+                self.updateFocusIfNeeded()
             }
         }
     }
@@ -166,7 +198,13 @@ class LoginViewController: UIViewController {
     private func didValidationSuccess() {
         qrcodeImageView.image = nil
         stopValidation()
-        AppDelegate.shared.showTabBar()
+        if presentingViewController != nil {
+            dismiss(animated: false) {
+                AppDelegate.shared.showTabBar()
+            }
+        } else {
+            AppDelegate.shared.showTabBar()
+        }
     }
 
     /// 返回 true 表示登录流程已结束（成功或二维码已重新生成）
@@ -197,6 +235,12 @@ class LoginViewController: UIViewController {
         view.addSubview(dividerView)
         view.addSubview(titleLabel)
         view.addSubview(guideLabel)
+        view.addSubview(cancelButton)
+
+        cancelButton.snp.makeConstraints { make in
+            make.leading.equalTo(view.safeAreaLayoutGuide).offset(60)
+            make.top.equalTo(view.safeAreaLayoutGuide).offset(40)
+        }
 
         let qrStackView = UIStackView(arrangedSubviews: [qrcodeImageView, regenerateButton])
         qrStackView.axis = .vertical

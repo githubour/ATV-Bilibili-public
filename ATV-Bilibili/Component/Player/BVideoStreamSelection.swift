@@ -126,12 +126,12 @@ extension VideoPlayURLInfo.DashInfo.DashMediaInfo {
 
     /// 杜比视界 (画质 id 126)
     var isDolbyVision: Bool {
-        id == MediaQualityEnum.quality_hdr_dolby.qn
+        id == QualityId.dolbyVision
     }
 
     /// HDR10 / HLG (画质 id 125)
     var isHDR10: Bool {
-        id == 125
+        id == QualityId.hdr10
     }
 
     /// 动态范围档位: 2 = 杜比视界, 1 = HDR, 0 = SDR

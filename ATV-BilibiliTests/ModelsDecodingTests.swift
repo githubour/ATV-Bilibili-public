@@ -34,6 +34,20 @@ final class ModelsDecodingTests: XCTestCase {
         XCTAssertEqual(info.aid, 42)
     }
 
+    /// Related/Card 缺失时详情页仍可解码，避免整页被一个可选区块拖垮
+    func test_videoDetail_missingOptionalSectionsDecodes() throws {
+        let json = """
+        {"View":{"aid":42,"cid":242,"title":"测试视频","duration":300,
+                 "owner":{"mid":7,"name":"UP主","face":null},
+                 "stat":{"favorite":1,"coin":2,"like":3,"share":4,"danmaku":5,"view":6}}}
+        """
+        let detail = try decoder.decode(VideoDetail.self, from: Data(json.utf8))
+        XCTAssertEqual(detail.View.title, "测试视频")
+        XCTAssertTrue(detail.Related.isEmpty)
+        XCTAssertFalse(detail.Card.following)
+        XCTAssertNil(detail.Card.follower)
+    }
+
     func test_playerInfo_decodes() throws {
         let json = #"{"last_play_time":90000,"last_play_cid":242}"#
         let info = try decoder.decode(PlayerInfo.self, from: Data(json.utf8))
@@ -41,6 +55,15 @@ final class ModelsDecodingTests: XCTestCase {
         XCTAssertEqual(info.last_play_cid, 242)
         // 计算属性：毫秒 → 秒
         XCTAssertEqual(info.playTimeInSecond, 90)
+    }
+
+    /// 续播字段缺失时不应拖垮整个 PlayerInfo（字幕/章节/遮罩都挂在它上面）
+    func test_playerInfo_missingResumeFieldsDefaultsToZero() throws {
+        let json = #"{"subtitle":{"subtitles":[]}}"#
+        let info = try decoder.decode(PlayerInfo.self, from: Data(json.utf8))
+        XCTAssertEqual(info.last_play_time, 0)
+        XCTAssertEqual(info.last_play_cid, 0)
+        XCTAssertEqual(info.subtitle?.subtitles?.count, 0)
     }
 
     func test_videoPlayURLInfo_dashMediaInfo_decodes() throws {
@@ -73,18 +96,17 @@ final class ModelsDecodingTests: XCTestCase {
         XCTAssertEqual(hevcStream.playableURLs.count, 1)
     }
 
-    func test_bangumiSeasonInfo_decodes() throws {
+    func test_bangumiInfo_decodes() throws {
         let json = """
-        {"main_section":{"type":1,"season_id":999,
-                         "episodes":[{"id":1001,"aid":42,"cid":242,"cover":"https://i0.hdslb.com/c.jpg",
-                                      "title":"第1话","long_title":"序章"}]},
-         "section":[]}
+        {"type":1,"season_id":999,
+         "episodes":[{"id":1001,"aid":42,"cid":242,"cover":"https://i0.hdslb.com/c.jpg",
+                      "title":"第1话","long_title":"序章"}]}
         """
-        let season = try decoder.decode(BangumiSeasonInfo.self, from: Data(json.utf8))
-        XCTAssertEqual(season.main_section.season_id, 999)
-        XCTAssertEqual(season.main_section.episodes.count, 1)
-        XCTAssertEqual(season.main_section.episodes[0].long_title, "序章")
-        XCTAssertEqual(season.main_section.findEpisodeById(1001)?.aid, 42)
+        let info = try decoder.decode(BangumiInfo.self, from: Data(json.utf8))
+        XCTAssertEqual(info.season_id, 999)
+        XCTAssertEqual(info.episodes.count, 1)
+        XCTAssertEqual(info.episodes[0].long_title, "序章")
+        XCTAssertEqual(info.findEpisodeById(1001)?.aid, 42)
     }
 
     func test_replys_decodes() throws {
@@ -100,5 +122,62 @@ final class ModelsDecodingTests: XCTestCase {
         XCTAssertEqual(replys.replies?[0].member.uname, "user")
         XCTAssertEqual(replys.replies?[0].content.message, "你好")
         XCTAssertEqual(replys.replies?[0].content.pictures?.count, 1)
+    }
+
+    func test_upSpaceSeasons_decodes() throws {
+        let json = """
+        {"items_lists":{"page":{"page_num":1,"page_size":20,"total":32},
+                        "seasons_list":[
+                          {"meta":{"mid":23947287,"season_id":665,"title":"奇葩小国",
+                                   "cover":"https://i0.hdslb.com/bfs/archive/cover.jpg","total":53,
+                                   "description":"小约翰奇葩小国系列","name":"合集·奇葩小国"},
+                           "archives":[],"recent_aids":[]}
+                        ],
+                        "series_list":[]}}
+        """
+        let resp = try decoder.decode(UpSpaceSeasonsResponse.self, from: Data(json.utf8))
+        XCTAssertEqual(resp.items_lists.page?.total, 32)
+        XCTAssertEqual(resp.items_lists.seasons_list.count, 1)
+
+        let meta = resp.items_lists.seasons_list[0].meta
+        XCTAssertEqual(meta.season_id, 665)
+        XCTAssertEqual(meta.title, "奇葩小国")
+        XCTAssertEqual(meta.total, 53)
+        XCTAssertEqual(meta.cover?.host, "i0.hdslb.com")
+
+        let card = UpSpaceSeasonCard(meta: meta, ownerName: "小约翰可汗")
+        XCTAssertEqual(card.title, "奇葩小国")
+        XCTAssertEqual(card.ownerName, "小约翰可汗")
+        // 合集不是稿件；基类要求 PlayableData，点选由 goDetail 接管
+        XCTAssertEqual(card.aid, 0)
+        XCTAssertEqual(card.cid, 0)
+        XCTAssertEqual(card.overlay?.rightItems.first?.text, "53 个视频")
+    }
+
+    func test_seasonArchives_decodes() throws {
+        let json = """
+        {"aids":[1600254660],
+         "archives":[{"aid":1600254660,"bvid":"BV1c2421A7iB",
+                      "title":"现代柏林墙在哪个国家？【奇葩小国51】",
+                      "pic":"http://i1.hdslb.com/bfs/archive/pic.jpg",
+                      "duration":2175,"ctime":1707279434,"pubdate":1707447600,
+                      "stat":{"view":10688392,"danmaku":43688,"vt":0},
+                      "state":0,"ugc_pay":0}],
+         "meta":{"season_id":665,"title":"奇葩小国","total":53},
+         "page":{"page_num":1,"page_size":20,"total":53}}
+        """
+        let resp = try decoder.decode(SeasonArchivesResponse.self, from: Data(json.utf8))
+        XCTAssertEqual(resp.archives.count, 1)
+        XCTAssertEqual(resp.page?.total, 53)
+
+        let archive = resp.archives[0]
+        XCTAssertEqual(archive.aid, 1600254660)
+        XCTAssertEqual(archive.duration, 2175)
+        XCTAssertEqual(archive.stat?.view, 10688392)
+
+        let card = SeasonArchiveCard(archive: archive, ownerName: "小约翰可汗")
+        XCTAssertEqual(card.aid, 1600254660)
+        XCTAssertEqual(card.title, "现代柏林墙在哪个国家？【奇葩小国51】")
+        XCTAssertEqual(card.overlay?.rightItems.first?.text, "36:15")
     }
 }

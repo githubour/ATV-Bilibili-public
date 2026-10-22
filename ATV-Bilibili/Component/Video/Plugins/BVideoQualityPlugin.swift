@@ -13,7 +13,8 @@ class BVideoQualityPlugin: NSObject, CommonPlayerPlugin {
     private var currentQualityId: Int?
     private var currentStreamIndex: Int? // 当前选中的流索引
     private var isQualityLocked: Bool = false // 是否手动锁定了画质
-    private var onQualityChange: ((Int, Int?) -> Void)? // (qualityId, streamIndex)
+    /// 返回是否真正切换成功；失败时不更新勾选态，避免菜单与画面不一致
+    private var onQualityChange: ((Int, Int?) async -> Bool)? // (qualityId, streamIndex)
     /// 未手动锁定时, 从 accessLog 探测到的 ABR 实际播放流
     private var abrStreamIndex: Int?
     /// 菜单 action 实例(按 streamIndex 索引), transportBar 菜单不重建, 勾选态就地更新
@@ -29,7 +30,7 @@ class BVideoQualityPlugin: NSObject, CommonPlayerPlugin {
         let streamIndex: Int? // 在 dash.video 数组中的索引（用于精确定位流）
     }
 
-    init(detailData: PlayerDetailData, onQualityChange: @escaping (Int, Int?) -> Void) {
+    init(detailData: PlayerDetailData, onQualityChange: @escaping (Int, Int?) async -> Bool) {
         playData = detailData
         self.onQualityChange = onQualityChange
         super.init()
@@ -56,9 +57,10 @@ class BVideoQualityPlugin: NSObject, CommonPlayerPlugin {
         if let timeObserver {
             player.removeTimeObserver(timeObserver)
         }
-        // 周期探测 ABR 实际播放的流, 用于菜单勾选当前画质
+        // 周期探测 ABR 实际播放的流, 用于菜单勾选当前画质。
+        // 主队列：pollAbrQuality 会读 isQualityLocked/player，这些由主线程菜单动作改写。
         timeObserver = player.addPeriodicTimeObserver(forInterval: CMTime(seconds: 5, preferredTimescale: 1),
-                                                      queue: DispatchQueue.global())
+                                                      queue: .main)
         { [weak self] _ in
             guard let self else { return }
             self.pollAbrQuality()
@@ -110,7 +112,9 @@ class BVideoQualityPlugin: NSObject, CommonPlayerPlugin {
     /// accessLog 的 indicatedBitrate 对应播放列表声明的 BANDWIDTH(平均码率×1.5 峰值, 见 peakBandwidth)
     private func nearestStream(forIndicatedBitrate bitrate: Double) -> QualityOption? {
         availableQualities.min {
-            abs(Double($0.bandwidth) * 1.5 - bitrate) < abs(Double($1.bandwidth) * 1.5 - bitrate)
+            // 峰值带宽系数与播放列表声明同源（loader.peakBandwidth），两处必须永远一致
+            abs(Double(BilibiliVideoResourceLoaderDelegate.peakBandwidth(forAverage: $0.bandwidth)) - bitrate)
+                < abs(Double(BilibiliVideoResourceLoaderDelegate.peakBandwidth(forAverage: $1.bandwidth)) - bitrate)
         }
     }
 
@@ -264,15 +268,15 @@ class BVideoQualityPlugin: NSObject, CommonPlayerPlugin {
     }
 
     private func switchQuality(to quality: QualityOption) {
-        // 更新状态：标记为手动锁定
-        isQualityLocked = true
-        currentQualityId = quality.id
-        currentStreamIndex = quality.streamIndex
-
-        // 立即刷新勾选态, 不等播放器重建菜单
-        refreshMenuStates()
-
-        // 触发画质切换
-        onQualityChange?(quality.id, quality.streamIndex)
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let switched = await self.onQualityChange?(quality.id, quality.streamIndex) ?? false
+            guard switched else { return }
+            // 只有播放器真的重建成功后才更新勾选态
+            self.isQualityLocked = true
+            self.currentQualityId = quality.id
+            self.currentStreamIndex = quality.streamIndex
+            self.refreshMenuStates()
+        }
     }
 }

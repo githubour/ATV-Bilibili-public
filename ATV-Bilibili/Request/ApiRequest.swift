@@ -21,15 +21,38 @@ enum ApiRequest {
     static let appkey = "5ae412b53418aac5"
     static let appsec = "5b9cf6c9786efd204dcf0c1ce2d08436"
 
+    /// App 接口专用会话：关闭 URLSession 自身的 Cookie 存储，
+    /// 统一由 CookieHandler 按请求快照注入，避免共享存储里的旧账号 cookie 混入。
+    private static let session: Session = {
+        let config = URLSessionConfiguration.default
+        config.httpShouldSetCookies = false
+        config.timeoutIntervalForRequest = 10
+        config.timeoutIntervalForResource = 10
+        return Session(configuration: config)
+    }()
+
+    /// 同一 mid 的 refresh 只跑一次；并发请求同时收到 -101 时复用同一个 Task
+    private struct RefreshEntry {
+        let id: UUID
+        let task: Task<Bool, Never>
+    }
+
+    private static let refreshLock = NSLock()
+    private static var refreshEntries: [Int: RefreshEntry] = [:]
+
+    private static func withRefreshLock<T>(_ body: () -> T) -> T {
+        refreshLock.lock()
+        defer { refreshLock.unlock() }
+        return body()
+    }
+
     enum EndPoint {
         static let loginQR = "https://passport.bilibili.com/x/passport-tv-login/qrcode/auth_code"
         static let verifyQR = "https://passport.bilibili.com/x/passport-tv-login/qrcode/poll"
         static let refresh = "https://passport.bilibili.com/api/v2/oauth2/refresh_token"
-        static let ssoCookie = "https://passport.bilibili.com/api/login/sso"
         static let feed = "https://app.bilibili.com/x/v2/feed/index"
-        // 推荐流不感兴趣反馈(PiliPlus/bili-webos 双源核实): reason_id 1=不感兴趣(当前视频) 4=不想看此UP主, 同参数 /cancel 撤销
+        // 推荐流不感兴趣反馈(PiliPlus/bili-webos 双源核实): reason_id 1=不感兴趣(当前视频) 4=不想看此UP主
         static let feedDislike = "https://app.bilibili.com/x/feed/dislike"
-        static let feedDislikeCancel = "https://app.bilibili.com/x/feed/dislike/cancel"
         static let season = "https://api.bilibili.com/pgc/view/v2/app/season"
         static let dislike = "https://app.biliapi.net/x/v2/view/dislike"
         static let upSpaceArchive = "https://app.bilibili.com/x/v2/space/archive/cursor"
@@ -77,34 +100,61 @@ enum ApiRequest {
         return AccountManager.shared.removeAccount(account)
     }
 
-    /// 请求原始响应体，已做签名与状态码校验
+    /// 请求原始响应体，已做签名与状态码校验。
+    /// - recoverAuth: -101 时先尝试一次 refresh 并重试；refresh 自身必须传 false，避免递归。
+    /// - accountOverride: 刷新等后台任务固定使用发起时的账号，不随当前活动账号变化。
     static func requestData(_ url: URLConvertible,
                             method: HTTPMethod = .get,
                             parameters: Parameters = [:],
                             auth: Bool = true,
-                            encoding: ParameterEncoding = URLEncoding.default) async throws -> Data
+                            encoding: ParameterEncoding = URLEncoding.default,
+                            recoverAuth: Bool = true,
+                            accountOverride: AccountManager.Account? = nil) async throws -> Data
     {
-        var parameters = parameters
-        if auth {
-            parameters["access_key"] = getToken()?.accessToken
-        }
-        parameters = sign(for: parameters)
-        let data = try await AF.request(url, method: method, parameters: parameters, encoding: encoding)
-            .serializingData()
-            .value
-        if let status = APIResponse.status(from: data), status.code != 0 {
+        var didRecoverAuth = false
+        while true {
+            // 请求创建时一次性快照账号：token 与 Cookie 必须来自同一个 mid，
+            // 否则构造期间切号会出现 A 的 access_key 配 B 的 cookie。
+            let account = accountOverride ?? AccountManager.shared.activeAccount
+            let requestMID = account?.profile.mid
+            var parameters = parameters
+            if auth {
+                parameters["access_key"] = account?.token.accessToken
+            }
+            parameters = sign(for: parameters)
+            var headers = HTTPHeaders()
+            if let resolvedURL = try? url.asURL(),
+               let cookieHeader = CookieHandler.shared.cookieHeader(for: resolvedURL, mid: requestMID)
+            {
+                headers.add(HTTPHeader(name: "Cookie", value: cookieHeader))
+            }
+            let data = try await session.request(url, method: method, parameters: parameters, encoding: encoding, headers: headers)
+                .serializingData()
+                .value
+            guard let status = APIResponse.status(from: data), status.code != 0 else { return data }
             if status.code == -101 {
-                await MainActor.run {
-                    AccountManager.shared.handleAuthenticationFailure()
-                    if !AccountManager.shared.isLoggedIn {
-                        AppDelegate.shared.showLogin()
-                    }
+                let canRecover = recoverAuth
+                    && !didRecoverAuth
+                    && auth
+                    && requestMID != nil
+                    && AccountManager.shared.activeAccount?.profile.mid == requestMID
+                if canRecover,
+                   await refreshToken(),
+                   AccountManager.shared.activeAccount?.profile.mid == requestMID
+                {
+                    didRecoverAuth = true
+                    continue
+                }
+                let isActive = await MainActor.run {
+                    AccountManager.shared.handleAuthenticationFailure(mid: requestMID)
+                }
+                if isActive {
+                    await MainActor.run { AppDelegate.shared.showLoginForExpiredSession() }
                 }
             }
             Logger.warn("[api] code:\(status.code) \(status.message) url:\(url)")
             throw RequestError.statusFail(code: status.code, message: status.message)
         }
-        return data
     }
 
     /// 只关心请求是否成功，不解析响应体
@@ -122,9 +172,17 @@ enum ApiRequest {
                                       parameters: Parameters = [:],
                                       auth: Bool = true,
                                       encoding: ParameterEncoding = URLEncoding.default,
-                                      decoder: JSONDecoder = JSONDecoder()) async throws -> T
+                                      decoder: JSONDecoder = JSONDecoder(),
+                                      recoverAuth: Bool = true,
+                                      accountOverride: AccountManager.Account? = nil) async throws -> T
     {
-        let raw = try await requestData(url, method: method, parameters: parameters, auth: auth, encoding: encoding)
+        let raw = try await requestData(url,
+                                        method: method,
+                                        parameters: parameters,
+                                        auth: auth,
+                                        encoding: encoding,
+                                        recoverAuth: recoverAuth,
+                                        accountOverride: accountOverride)
         let object = try APIResponse.extractDataObject(from: raw, dataObj: "data")
         do {
             return try decoder.decode(T.self, from: object)
@@ -206,21 +264,52 @@ enum ApiRequest {
         }
     }
 
-    static func refreshToken() async {
-        AF.cancelAllRequests()
+    /// 刷新当前活动账号的 token；同一 mid 并发调用共享一个 Task。
+    /// 返回是否刷新成功，供 -101 的请求决定是否重试。
+    @discardableResult
+    static func refreshToken() async -> Bool {
+        // 不再 AF.cancelAllRequests()：它会连带取消默认会话上所有在途业务请求（推荐流等），
+        // 用户视角是「页面加载集体失败」；过期 token 的在途请求让它们自己走各自的结果路径。
+        guard let account = AccountManager.shared.activeAccount else { return false }
+        let mid = account.profile.mid
+        let entry: RefreshEntry = withRefreshLock {
+            if let existing = refreshEntries[mid] { return existing }
+            let id = UUID()
+            let task = Task { await performRefresh(account: account) }
+            let newEntry = RefreshEntry(id: id, task: task)
+            refreshEntries[mid] = newEntry
+            return newEntry
+        }
+        let result = await entry.task.value
+        withRefreshLock {
+            if refreshEntries[mid]?.id == entry.id {
+                refreshEntries[mid] = nil
+            }
+        }
+        return result
+    }
+
+    private static func performRefresh(account: AccountManager.Account) async -> Bool {
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         do {
             var res: LoginResp = try await request(EndPoint.refresh,
                                                    method: .post,
-                                                   parameters: ["refresh_token": getToken()?.refreshToken ?? ""],
-                                                   decoder: decoder)
+                                                   parameters: ["refresh_token": account.token.refreshToken],
+                                                   decoder: decoder,
+                                                   recoverAuth: false,
+                                                   accountOverride: account)
             res.tokenInfo.expireDate = Date().addingTimeInterval(TimeInterval(res.tokenInfo.expiresIn))
             let cookies = res.cookieInfo.toCookies()
-            CookieHandler.shared.saveCookie(list: cookies)
-            AccountManager.shared.updateActiveAccount(token: res.tokenInfo, cookies: cookies)
+            // 按发起刷新的 mid 写回：刷新期间用户可能已切到另一个账号
+            AccountManager.shared.updateStoredAccountToken(mid: account.profile.mid,
+                                                           token: res.tokenInfo,
+                                                           cookies: cookies)
+            CookieHandler.shared.updateAccountCookies(mid: account.profile.mid, cookies: cookies)
+            return true
         } catch {
             Logger.warn("[api] refreshToken fail: \(error)")
+            return false
         }
     }
 
@@ -328,11 +417,6 @@ enum ApiRequest {
     /// 上报推荐流「不感兴趣」, 服务端会减少同类推荐(卡片数据里 aid 即可, 不需要 up mid)
     static func requestFeedDislike(aid: Int, reason: FeedDislikeReason) async throws {
         try await requestVoid(EndPoint.feedDislike, parameters: ["goto": "av", "id": aid, "reason_id": reason.rawValue, "build": 1, "mobi_app": "android"])
-    }
-
-    /// 撤销推荐流「不感兴趣」(同参数)
-    static func requestFeedDislikeCancel(aid: Int, reason: FeedDislikeReason) async throws {
-        try await requestVoid(EndPoint.feedDislikeCancel, parameters: ["goto": "av", "id": aid, "reason_id": reason.rawValue, "build": 1, "mobi_app": "android"])
     }
 
     struct BangumiInfo: Codable, Hashable {

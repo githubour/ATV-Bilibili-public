@@ -22,6 +22,8 @@ class TopShelfProvider: TVTopShelfContentProvider {
     private struct SyncData: Codable {
         let toView: [ItemData]?
         let dynamic: [ItemData]?
+        /// 向后兼容：老版本写入的 JSON 无此字段，Optional 解码为 nil → 该分区不渲染
+        let history: [ItemData]?
     }
 
     override init() {
@@ -54,8 +56,10 @@ class TopShelfProvider: TVTopShelfContentProvider {
             return
         }
 
-        // 分区做 identifier 前缀: 同一视频同时出现在稍后再看和动态时避免重复 identifier
+        // 分区做 identifier 前缀: 同一视频同时出现在多个分区时避免重复 identifier。
+        // 分区顺序即语义(无标题 API): 继续观看最前, 其次稍后再看, 最后动态。
         let sections: [(prefix: String, items: [ItemData])] = [
+            ("history", syncData.history ?? []),
             ("toView", syncData.toView ?? []),
             ("dynamic", syncData.dynamic ?? []),
         ]

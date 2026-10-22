@@ -15,7 +15,6 @@ enum BvidConvertor {
 
     private static let BASE: UInt64 = 58
     private static let BV_LEN: Int = 12
-    private static let PREFIX: String = "BV1"
 
     static func av2bv(avid: UInt64) -> String {
         var bytes: [UInt8] = [66, 86, 49, 48, 48, 48, 48, 48, 48, 48, 48, 48]

@@ -141,6 +141,53 @@ final class BilibiliVideoResourceLoaderDelegateTests: XCTestCase {
         XCTAssertTrue(BilibiliVideoResourceLoaderDelegate.planAudioTracks(for: dash, includeLossless: true).isEmpty)
     }
 
+    // MARK: - dolbyVisionDeclaration（Apple HLS 附录对照表）
+
+    func test_dolbyVision_profile5_keepsCodecAndDeclaresPQWithoutSupplemental() {
+        // Profile 5 是单层 10-bit HEVC、不向后兼容：CODECS 保持原值，不加 SUPPLEMENTAL-CODECS
+        let declaration = BilibiliVideoResourceLoaderDelegate.dolbyVisionDeclaration(forCodecs: "dvh1.05.07")
+        XCTAssertEqual(declaration?.baseCodecs, "dvh1.05.07")
+        XCTAssertEqual(declaration?.supplementary, "")
+        XCTAssertEqual(declaration?.videoRange, "PQ")
+    }
+
+    func test_dolbyVision_profile8HLGCompatible() {
+        // 附录：Dolby Vision 8.4 → hvc1.2.4.L153.b0 / dvh1.08.07/db4h / HLG
+        for codecs in ["dvh1.08.03", "dvh1.08.07"] {
+            let declaration = BilibiliVideoResourceLoaderDelegate.dolbyVisionDeclaration(forCodecs: codecs)
+            XCTAssertEqual(declaration?.baseCodecs, "hvc1.2.4.L153.b0", codecs)
+            XCTAssertEqual(declaration?.supplementary, ",SUPPLEMENTAL-CODECS=\"\(codecs)/db4h\"", codecs)
+            XCTAssertEqual(declaration?.videoRange, "HLG", codecs)
+        }
+    }
+
+    func test_dolbyVision_profile8HDR10Compatible() {
+        // 附录：Dolby Vision 8.1 → hvc1.2.4.L150 / dvh1.08.06/db1p / PQ
+        let declaration = BilibiliVideoResourceLoaderDelegate.dolbyVisionDeclaration(forCodecs: "dvh1.08.06")
+        XCTAssertEqual(declaration?.baseCodecs, "hvc1.2.4.L150")
+        XCTAssertEqual(declaration?.supplementary, ",SUPPLEMENTAL-CODECS=\"dvh1.08.06/db1p\"")
+        XCTAssertEqual(declaration?.videoRange, "PQ")
+    }
+
+    func test_dolbyVision_unlistedProfileReturnsNilInsteadOfGuessing() {
+        // 附录写明兼容品牌与 VIDEO-RANGE 互为交叉校验，缺任何一个都是错的：
+        // 查不到就返回 nil，让调用方省掉该属性，而不是编一个动态范围出来
+        XCTAssertNil(BilibiliVideoResourceLoaderDelegate.dolbyVisionDeclaration(forCodecs: "dvh1.08.05"))
+        XCTAssertNil(BilibiliVideoResourceLoaderDelegate.dolbyVisionDeclaration(forCodecs: "dvh1.09.06"))
+        XCTAssertNil(BilibiliVideoResourceLoaderDelegate.dolbyVisionDeclaration(forCodecs: "dvh1.08"))
+        XCTAssertNil(BilibiliVideoResourceLoaderDelegate.dolbyVisionDeclaration(forCodecs: hevc))
+        XCTAssertNil(BilibiliVideoResourceLoaderDelegate.dolbyVisionDeclaration(forCodecs: hdr10))
+    }
+
+    func test_masterPlaylist_unlistedDolbyVisionOmitsVideoRange() {
+        let dash = makeDash(video: [makeVideo(id: 126, bandwidth: 40_000_000, codecs: "dvh1.08.05", frameRate: "23.810")],
+                            audio: [makeAudio(id: 30280, bandwidth: 241_000, codecs: "mp4a.40.2")])
+        let master = renderMasterPlaylist(dash: dash)
+        XCTAssertFalse(master.contains("VIDEO-RANGE"), master)
+        XCTAssertFalse(master.contains("SUPPLEMENTAL-CODECS"), master)
+        XCTAssertTrue(master.contains("CODECS=\"dvh1.08.05"), master)
+    }
+
     // MARK: - master playlist 结构
 
     func test_masterPlaylist_declaresAudioCodecAndChannelsForDolby() throws {

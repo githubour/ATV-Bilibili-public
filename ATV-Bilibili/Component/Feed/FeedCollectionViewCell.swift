@@ -112,6 +112,11 @@ class FeedCollectionViewCell: BLMotionCollectionViewCell {
     }
 
     func setup(data: any DisplayData) {
+        isAccessibilityElement = true
+        accessibilityTraits = .button
+        accessibilityLabel = [data.title, data.ownerName, data.date]
+            .compactMap { $0?.isEmpty == false ? $0 : nil }
+            .joined(separator: "，")
         titleLabel.text = data.title
         if let overlay = data.overlay {
             overlayView.isHidden = false

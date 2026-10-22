@@ -20,11 +20,24 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
         Logger.setup()
         ImageCache.default.diskStorage.config.sizeLimit = 500 * 1024 * 1024
-        AVInfoPanelCollectionViewThumbnailCellHook.start()
         AccountManager.shared.bootstrap()
         BiliBiliUpnpDMR.shared.start()
-        WebRequest.requestIndex()
+        // 首页请求只用于让服务端回种匿名 cookie 并回写账号 cookie；未登录(还在登录页)时没必要在冷启动抢带宽
+        if ApiRequest.isLogin() {
+            WebRequest.requestIndex()
+        }
+        NotificationCenter.default.addObserver(self,
+                                               selector: #selector(handleAccountSwitch),
+                                               name: .accountDidSwitch,
+                                               object: nil)
         return true
+    }
+
+    /// 换号后清理随账号走的缓存：弹幕云屏蔽词（下次进弹幕页会重新同步）+ 图片缓存（避免头像/封面混号）
+    @objc private func handleAccountSwitch() {
+        VideoDanmakuFilter.shared.resetCloudRules()
+        ImageCache.default.clearMemoryCache()
+        ImageCache.default.clearDiskCache()
     }
 
     func application(_ application: UIApplication, configurationForConnecting connectingSceneSession: UISceneSession, options: UIScene.ConnectionOptions) -> UISceneConfiguration {
@@ -37,6 +50,22 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 
     func showLogin() {
         sceneDelegate?.showLogin()
+    }
+
+    /// 登录态过期时优先以可取消的 modal 打开登录页：
+    /// 账号还存在（可切号/重试），不应把根 VC 直接换成无法返回的登录页。
+    func showLoginForExpiredSession() {
+        if UIViewController.topMostViewController() is LoginViewController { return }
+        guard !AccountManager.shared.accounts.isEmpty else {
+            showLogin()
+            return
+        }
+        let login = LoginViewController.create()
+        login.modalPresentationStyle = .fullScreen
+        login.onCancel = { [weak login] in
+            login?.dismiss(animated: true)
+        }
+        UIViewController.topMostViewController().present(login, animated: true)
     }
 
     func showTabBar() {

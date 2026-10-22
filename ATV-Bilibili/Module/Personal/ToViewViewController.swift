@@ -5,7 +5,6 @@
 //  Created by Etan Chen on 2021/4/5.
 //
 
-import Alamofire
 import UIKit
 
 class ToViewViewController: StandardVideoCollectionViewController<ToViewData> {
@@ -44,11 +43,14 @@ class ToViewViewController: StandardVideoCollectionViewController<ToViewData> {
 
     func del(with toViewItem: ToViewData) {
         let aid = toViewItem.aid
-        guard let csrf = CookieHandler.shared.csrf() else { return }
-        AF.request(WebRequest.EndPoint.toViewDel, method: .post, parameters: ["aid": aid, "csrf": csrf]).responseData {
-            [weak self] resp in
-            Logger.debug("[toview] del result: \(resp.result)")
-            self?.reloadData()
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await WebRequest.requestToViewDel(aid: aid)
+                self.reloadData()
+            } catch {
+                self.presentError(error, title: "删除失败")
+            }
         }
     }
 
@@ -103,5 +105,15 @@ extension WebRequest {
     /// 加入稍后再看。幂等：已存在于列表中时服务端同样返回 code 0
     static func requestToViewAdd(aid: Int) async throws {
         try await requestVoid(method: .post, url: EndPoint.toViewAdd, parameters: ["aid": aid])
+    }
+
+    /// 删除稍后再看。走统一请求层，失败抛错由页面提示，不再静默刷新。
+    static func requestToViewDel(aid: Int) async throws {
+        guard let csrf = CookieHandler.shared.csrf() else {
+            throw RequestError.statusFail(code: -1, message: "登录状态异常，请重新扫码登录")
+        }
+        try await requestVoid(method: .post,
+                              url: EndPoint.toViewDel,
+                              parameters: ["aid": aid, "csrf": csrf])
     }
 }

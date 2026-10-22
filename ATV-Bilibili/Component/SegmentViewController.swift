@@ -9,7 +9,7 @@ import Foundation
 import SnapKit
 import UIKit
 
-class SegmentViewController: UIViewController, BLTabBarContentVCProtocol {
+class SegmentViewController: UIViewController, BLTabBarContentVCProtocol, ChildContentContainer {
     struct CategoryDisplayModel {
         let title: String
         let contentVC: UIViewController
@@ -81,18 +81,7 @@ class SegmentViewController: UIViewController, BLTabBarContentVCProtocol {
         }
     }
 
-    func setViewController(vc: UIViewController) {
-        currentViewController?.willMove(toParent: nil)
-        currentViewController?.view.removeFromSuperview()
-        currentViewController?.removeFromParent()
-        currentViewController = vc
-        addChild(vc)
-        contentView.addSubview(vc.view)
-        vc.view.makeConstraintsToBindToSuperview()
-        vc.didMove(toParent: self)
-    }
-
     func reloadData() {
-        (currentViewController as? BLTabBarContentVCProtocol)?.reloadData()
+        forwardReloadToContentViewController()
     }
 }

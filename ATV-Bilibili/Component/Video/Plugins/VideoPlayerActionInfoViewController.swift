@@ -287,8 +287,17 @@ final class VideoPlayerActionInfoViewController: UIViewController {
         entries[index].isOn.toggle()
         collectionView.reloadData()
         let follow = entries[index].isOn
-        Task {
-            try? await WebRequest.follow(mid: ownerMid, follow: follow)
+        Task { @MainActor [weak self] in
+            do {
+                try await WebRequest.follow(mid: ownerMid, follow: follow)
+            } catch {
+                // 失败回滚 + 提示，避免图标停在错误状态
+                guard let self else { return }
+                self.entries[index].isOn = !follow
+                self.collectionView.reloadData()
+                self.presentAlert(title: follow ? "关注失败" : "取消关注失败",
+                                  message: error.localizedDescription)
+            }
         }
     }
 
@@ -308,14 +317,21 @@ final class VideoPlayerActionInfoViewController: UIViewController {
         let nextState = entries[index].isOn
         Task { [weak self] in
             guard let self else { return }
-            let success = await WebRequest.requestLike(aid: self.aid, like: nextState)
+            let failure: String?
+            do {
+                try await WebRequest.requestLike(aid: self.aid, like: nextState)
+                failure = nil
+            } catch {
+                failure = error.localizedDescription
+            }
             await MainActor.run {
                 self.inFlightKinds.remove(.like)
-                guard !success else { return }
+                guard let failure else { return }
                 if let rollbackIndex = self.entries.firstIndex(where: { $0.kind == .like }) {
                     self.entries[rollbackIndex] = previous
                     self.collectionView.reloadData()
                 }
+                self.presentAlert(title: "点赞失败", message: failure)
             }
         }
     }
@@ -340,7 +356,22 @@ final class VideoPlayerActionInfoViewController: UIViewController {
                     self.updateCount(for: .coin, delta: num)
                     self.collectionView.reloadData()
                 }
-                WebRequest.requestCoin(aid: self.aid, num: num)
+                Task { [weak self] in
+                    do {
+                        try await WebRequest.requestCoin(aid: self?.aid ?? 0, num: num)
+                    } catch {
+                        await MainActor.run {
+                            guard let self else { return }
+                            self.coinMultiply -= num
+                            if let index = self.entries.firstIndex(where: { $0.kind == .coin }) {
+                                self.entries[index].isOn = self.coinMultiply >= 2
+                                self.updateCount(for: .coin, delta: -num)
+                                self.collectionView.reloadData()
+                            }
+                            self.presentAlert(title: "投币失败", message: error.localizedDescription)
+                        }
+                    }
+                }
             })
         }
         alert.addAction(UIAlertAction(title: "取消", style: .cancel))
@@ -369,7 +400,23 @@ final class VideoPlayerActionInfoViewController: UIViewController {
                     self.updateCount(for: .favorite, delta: -1)
                     self.collectionView.reloadData()
                     self.inFlightKinds.remove(.favorite)
-                    WebRequest.removeFavorite(aid: self.aid, mid: favList.map(\.id))
+                    let aid = self.aid
+                    let folderIDs = favList.map(\.id)
+                    Task { [weak self] in
+                        do {
+                            try await WebRequest.removeFavorite(aid: aid, mid: folderIDs)
+                        } catch {
+                            await MainActor.run {
+                                guard let self else { return }
+                                if let i = self.entries.firstIndex(where: { $0.kind == .favorite }), self.entries[i].isOn == false {
+                                    self.entries[i].isOn = true
+                                    self.updateCount(for: .favorite, delta: 1)
+                                    self.collectionView.reloadData()
+                                }
+                                self.presentAlert(title: "取消收藏失败", message: error.localizedDescription)
+                            }
+                        }
+                    }
                     return
                 }
 
@@ -395,7 +442,22 @@ final class VideoPlayerActionInfoViewController: UIViewController {
                     self.collectionView.reloadData()
                 }
                 self.inFlightKinds.remove(.favorite)
-                WebRequest.requestFavorite(aid: self.aid, mid: fav.id)
+                let aid = self.aid
+                Task { [weak self] in
+                    do {
+                        try await WebRequest.requestFavorite(aid: aid, mid: fav.id)
+                    } catch {
+                        await MainActor.run {
+                            guard let self else { return }
+                            if let i = self.entries.firstIndex(where: { $0.kind == .favorite }), self.entries[i].isOn {
+                                self.entries[i].isOn = false
+                                self.updateCount(for: .favorite, delta: -1)
+                                self.collectionView.reloadData()
+                            }
+                            self.presentAlert(title: "收藏失败", message: error.localizedDescription)
+                        }
+                    }
+                }
             })
         }
         alert.addAction(UIAlertAction(title: "取消", style: .cancel) { [weak self] _ in

@@ -66,6 +66,7 @@ class BLCustomButton: BLButton {
     private func updateTitleLabel(force: Bool = false) {
         let shouldHide = title == nil || title?.count == 0
         titleLabel.text = title
+        accessibilityLabel = title
         if force || titleLabel.isHidden != shouldHide {
             titleLabel.isHidden = shouldHide
             if shouldHide {
@@ -106,7 +107,10 @@ class BLCustomTextButton: BLButton {
     var object: Any?
 
     @IBInspectable var title: String? {
-        didSet { titleLabel.text = title }
+        didSet {
+            titleLabel.text = title
+            accessibilityLabel = title
+        }
     }
 
     @IBInspectable var titleColor: UIColor = .white {
@@ -160,6 +164,8 @@ class BLButton: UIControl {
 
     func setup() {
         isUserInteractionEnabled = true
+        isAccessibilityElement = true
+        accessibilityTraits = .button
         motionEffect = UIInterpolatingMotionEffect(keyPath: "center.x", type: .tiltAlongHorizontalAxis)
         motionEffect.maximumRelativeValue = 8
         motionEffect.minimumRelativeValue = -8
@@ -194,8 +200,12 @@ class BLButton: UIControl {
         }
     }
 
+    /// 聚焦态切换回调（例如焦点白底上需要换深色文字）
+    var onFocusChanged: ((Bool) -> Void)?
+
     override func didUpdateFocus(in context: UIFocusUpdateContext, with coordinator: UIFocusAnimationCoordinator) {
         super.didUpdateFocus(in: context, with: coordinator)
+        onFocusChanged?(isFocused)
         if isFocused {
             selectedWhiteView.isHidden = false
             coordinator.addCoordinatedAnimations {

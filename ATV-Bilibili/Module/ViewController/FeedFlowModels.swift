@@ -93,6 +93,8 @@ struct FeedFlowItem: Hashable {
 @MainActor
 protocol FeedFlowDataSource: AnyObject {
     var title: String { get }
+    /// 该视频流对应的连播队列类型（推荐流/关注流都不自动跳下一条）
+    var playbackQueueKind: PlaybackQueueKind { get }
     var reloadToken: String { get }
     var autoReloadInterval: TimeInterval? { get }
     var defaultPreviewHintText: String { get }

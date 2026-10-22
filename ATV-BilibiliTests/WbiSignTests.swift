@@ -34,6 +34,15 @@ final class WbiSignTests: XCTestCase {
         XCTAssertEqual(result["b"] as? String, "2")
     }
 
+    func test_escapeQueryValue_preservesSignatureFormat() {
+        XCTAssertEqual(WbiCrypto.escapeQueryValue("a&b"), "a%26b")
+        XCTAssertEqual(WbiCrypto.escapeQueryValue("a+b"), "a%2Bb")
+        XCTAssertEqual(WbiCrypto.escapeQueryValue("a=b"), "a%3Db")
+        XCTAssertEqual(WbiCrypto.escapeQueryValue("a#b"), "a%23b")
+        // 中文/空格维持现状（由 URL 构造阶段处理），不改变既有签名行为
+        XCTAssertEqual(WbiCrypto.escapeQueryValue("中文 词"), "中文 词")
+    }
+
     func test_encWbi_filtersSpecialCharactersInValues() {
         // 实现会对值过滤 !'()*——用同一签名结果固化该行为
         let filtered = WbiCrypto.encWbi(params: ["a": "va!(lu)e*"], imgKey: Self.goldenOrig, subKey: Self.goldenOrig)

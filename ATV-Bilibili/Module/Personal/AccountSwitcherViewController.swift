@@ -125,7 +125,13 @@ final class AccountSwitcherViewController: UIViewController {
 
     private func presentLogin() {
         dismiss(animated: true) {
-            AppDelegate.shared.showLogin()
+            // 以 modal 打开而不是替换根 VC：登录页可取消返回，避免误点「添加账号」后被锁死
+            let login = LoginViewController.create()
+            login.modalPresentationStyle = .fullScreen
+            login.onCancel = { [weak login] in
+                login?.dismiss(animated: true)
+            }
+            UIViewController.topMostViewController().present(login, animated: true)
         }
     }
 

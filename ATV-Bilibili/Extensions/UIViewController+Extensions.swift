@@ -26,7 +26,12 @@ extension UIViewController {
     }
 
     static func topMostViewController() -> UIViewController {
-        return AppDelegate.shared.mainWindow!.rootViewController!.topMostViewController()
+        guard let root = AppDelegate.shared.mainWindow?.rootViewController else {
+            // Scene 尚未连接/已销毁时不要强解包崩溃；投屏等后台入口允许“无窗口可展示”而安全失败。
+            Logger.warn("[ui] topMostViewController: mainWindow/rootViewController 不可用")
+            return UIViewController()
+        }
+        return root.topMostViewController()
     }
 }
 
@@ -51,7 +56,9 @@ extension UIViewController {
                       onDismiss: (() -> Void)? = nil)
     {
         Logger.warn(error)
-        let alert = UIAlertController(title: title, message: "\(error)", preferredStyle: .alert)
+        // 优先用错误自带的本地化描述（RequestError 已把业务码翻成可读文案），否则回落到枚举描述
+        let detail = (error as? LocalizedError)?.errorDescription ?? "\(error)"
+        let alert = UIAlertController(title: title, message: detail, preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "好", style: .cancel) { [weak self] _ in
             if dismissSelf {
                 self?.dismiss(animated: true)

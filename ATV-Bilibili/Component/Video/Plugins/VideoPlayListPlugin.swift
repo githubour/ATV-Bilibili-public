@@ -17,9 +17,13 @@ class VideoPlayListPlugin: NSObject, CommonPlayerPlugin {
     var isReversed = false
 
     let sequenceProvider: VideoSequenceProvider?
+    /// 队列来源：决定播完是否允许自动推进（推荐流/关注流不允许）
+    private let queueKind: PlaybackQueueKind
 
+    @MainActor
     init(sequenceProvider: VideoSequenceProvider?) {
         self.sequenceProvider = sequenceProvider
+        queueKind = sequenceProvider?.kind ?? .manualSequence
     }
 
     func playerDidLoad(playerVC: AVPlayerViewController) {
@@ -55,13 +59,16 @@ class VideoPlayListPlugin: NSObject, CommonPlayerPlugin {
     }
 
     func addMenuItems(current: inout [UIMenuElement]) -> [UIMenuElement] {
-        let loopImage = UIImage(systemName: "infinity")
-        let loopAction = UIAction(title: "循环播放", image: loopImage, state: Settings.loopPlay ? .on : .off) {
-            action in
-            action.state = (action.state == .off) ? .on : .off
-            Settings.loopPlay = action.state == .on
+        var actions = [UIMenuElement]()
+        // 推荐流/关注流没有“下一集”的概念，不提供循环整条流的入口。
+        if queueKind.allowsAutoAdvance {
+            let loopAction = UIAction(title: "循环播放", image: UIImage(systemName: "infinity"), state: Settings.loopPlay ? .on : .off) {
+                action in
+                action.state = (action.state == .off) ? .on : .off
+                Settings.loopPlay = action.state == .on
+            }
+            actions.append(loopAction)
         }
-        var actions = [UIMenuElement](arrayLiteral: loopAction)
         let currentInfo = sequenceProvider.map { provider in
             MainActor.assumeIsolated { provider.current() }
         } ?? nil
@@ -83,7 +90,18 @@ class VideoPlayListPlugin: NSObject, CommonPlayerPlugin {
     func playerDidEnd(player: AVPlayer) {
         Task { [weak self] in
             guard let self else { return }
-            if Settings.continuouslyPlay, await advance() {
+            // 推荐流/关注流播完即止，不进入“下一条”也不触发整条流的循环。
+            guard queueKind.allowsAutoAdvance else {
+                await MainActor.run { [weak self] in
+                    self?.onPlayEnd?()
+                }
+                return
+            }
+            let allowsAutoAdvance = SequenceAutoplayPolicy.shouldAutoAdvance(
+                continuouslyPlay: Settings.continuouslyPlay,
+                kind: queueKind
+            )
+            if allowsAutoAdvance, await advance() {
                 return
             }
             // 只有真的播到序列尽头才回卷。否则（例如关了连播但列表还没播完）

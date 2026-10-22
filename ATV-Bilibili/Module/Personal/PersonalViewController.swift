@@ -10,7 +10,7 @@ import Kingfisher
 import SnapKit
 import UIKit
 
-class PersonalViewController: UIViewController, BLTabBarContentVCProtocol {
+class PersonalViewController: UIViewController, BLTabBarContentVCProtocol, ChildContentContainer {
     struct CellModel {
         let title: String
         /// 对应的导航栏页面, 仅内容页有值（用于决定默认落地页）
@@ -36,7 +36,7 @@ class PersonalViewController: UIViewController, BLTabBarContentVCProtocol {
         return view
     }()
 
-    private let contentView: UIView = {
+    let contentView: UIView = {
         let view = UIView()
         view.translatesAutoresizingMaskIntoConstraints = false
         return view
@@ -142,20 +142,8 @@ class PersonalViewController: UIViewController, BLTabBarContentVCProtocol {
         return CellModel(title: page.title, page: page, contentVC: vc)
     }
 
-    func setViewController(vc: UIViewController) {
-        currentViewController?.willMove(toParent: nil)
-        currentViewController?.view.removeFromSuperview()
-        currentViewController?.removeFromParent()
-
-        currentViewController = vc
-        addChild(vc)
-        contentView.addSubview(vc.view)
-        vc.view.makeConstraintsToBindToSuperview()
-        vc.didMove(toParent: self)
-    }
-
     func reloadData() {
-        (currentViewController as? BLTabBarContentVCProtocol)?.reloadData()
+        forwardReloadToContentViewController()
     }
 
     func actionLogout() {

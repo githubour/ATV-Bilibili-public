@@ -97,7 +97,7 @@ class DebugPlugin: NSObject, CommonPlayerPlugin {
         guard let log = player.currentItem?.accessLog() else { return logs }
         guard let item = log.events.last else { return logs }
         // 完整 uri 有几百字符，会把浮层其他信息挤掉，只显示 host（完整地址在日志里）
-        let host = URLComponents(string: item.uri ?? "")?.host ?? "-"
+        let host = (item.uri ?? "").urlHost ?? "-"
         let addr = item.serverAddress ?? ""
         let changes = item.numberOfServerAddressChanges
         let dropped = item.numberOfDroppedVideoFrames

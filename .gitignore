@@ -83,6 +83,9 @@ iOSInjectionProject/
 # CodeBuddy IDE 数据
 .codebuddy/
 
+# Qoder IDE 数据
+.qoder/
+
 # 本机专用内容（含 UDID / Team ID 等），永不提交
 本机-*
 .zcodeignore
