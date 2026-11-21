@@ -68,6 +68,29 @@ enum CDNDiagnostics {
         await probeAll(urls: urls, bytes: fullProbeBytes, session: session)
     }
 
+    /// 起播择优结果的进程级缓存：同一组候选 host 在 TTL 内直接复用上次结果，
+    /// 避免每次起播/换集/切画质回退都对全部候选重复发 Range 请求。
+    private static var fastestHostCache = [String: (host: String, date: Date)]()
+    private static let fastestHostCacheLock = NSLock()
+    private static let fastestHostTTL: TimeInterval = 300
+
+    private static func cachedFastestHost(for key: String) -> String? {
+        fastestHostCacheLock.lock()
+        defer { fastestHostCacheLock.unlock() }
+        guard let entry = fastestHostCache[key] else { return nil }
+        guard Date().timeIntervalSince(entry.date) < fastestHostTTL else {
+            fastestHostCache.removeValue(forKey: key)
+            return nil
+        }
+        return entry.host
+    }
+
+    private static func storeFastestHost(_ host: String, for key: String) {
+        fastestHostCacheLock.lock()
+        defer { fastestHostCacheLock.unlock() }
+        fastestHostCache[key] = (host, Date())
+    }
+
     /// 起播用轻量测速，选出实测最快的 host；候选不足或全部失败时返回 nil。
     static func pickFastestHost(urls: [String]) async -> String? {
         guard urls.count > 1 else {
@@ -76,6 +99,12 @@ enum CDNDiagnostics {
         // 候选上限 3：起播阶段不值得为第 4 个以后节点继续串行等待；
         // 菜单里的完整测速仍会用全部候选。
         let candidates = Array(urls.prefix(3))
+        // 缓存键只取 host 集合（排序后），同一批 CDN 在 TTL 内视为同一结果
+        let cacheKey = candidates.compactMap { $0.urlHost }.sorted().joined(separator: ",")
+        if let cached = cachedFastestHost(for: cacheKey) {
+            Logger.debug("[cdn] 起播测速命中缓存 (\(Int(fastestHostTTL))s): \(cached)")
+            return cached
+        }
         let results = await probeAll(urls: candidates, bytes: quickProbeBytes, session: quickSession)
         let ranked = results.sorted { ($0.mbps ?? -1) > ($1.mbps ?? -1) }
         let summary = ranked.map { r in
@@ -83,7 +112,9 @@ enum CDNDiagnostics {
             return "\(r.host)=\(speed)"
         }.joined(separator: ", ")
         Logger.info("[cdn] 起播轻量测速 (\(quickProbeBytes / 1024)KB): \(summary)")
-        return ranked.first(where: { $0.mbps != nil })?.host
+        guard let best = ranked.first(where: { $0.mbps != nil })?.host else { return nil }
+        storeFastestHost(best, for: cacheKey)
+        return best
     }
 
     /// 测速并把结果写进日志，返回适合直接显示的文本。
@@ -110,14 +141,19 @@ enum CDNDiagnostics {
     /// 之间乱跳），与实际播放时下载中后段分片的持续吞吐（常常只有几 Mbps）严重背离 ——
     /// 选源/换源判据因此失真。所以先读一次头部拿到文件总长，再把采样点挪到文件后段。
     private static func probe(url: String, bytes: Int, session: Session) async -> ProbeResult {
+        // 头部只取 1 字节：这一趟只为拿 Content-Range 里的文件总长，不需要真下样本
         let headResponse = await session.request(url, headers: [
-            "Range": "bytes=0-\(bytes - 1)",
+            "Range": "bytes=0-0",
             "Referer": Keys.referer,
         ]).serializingData().response
 
         // 总长拿不到、或文件本身很小时（后段也在缓存里），只能退回头部采样
         guard let total = totalLength(of: headResponse), total > bytes * 2 else {
-            return probeResult(url: url, response: headResponse)
+            let fallbackResponse = await session.request(url, headers: [
+                "Range": "bytes=0-\(bytes - 1)",
+                "Referer": Keys.referer,
+            ]).serializingData().response
+            return probeResult(url: url, response: fallbackResponse)
         }
 
         // 取文件 70% 深处的一段：这里是播放真正要下载的数据，没有缓存加成

@@ -11,7 +11,7 @@ import Foundation
 class BUpnpPlugin: NSObject, CommonPlayerPlugin {
     let duration: Int?
     weak var player: AVPlayer?
-    private var observar: Any?
+    private var observer: Any?
 
     init(duration: Int?) {
         self.duration = duration
@@ -33,7 +33,7 @@ class BUpnpPlugin: NSObject, CommonPlayerPlugin {
         BiliBiliUpnpDMR.shared.currentPlugin = self
         self.player = player
         guard let duration else { return }
-        observar = player.addPeriodicTimeObserver(forInterval: CMTime(seconds: 5, preferredTimescale: 1), queue: .main) { time in
+        observer = player.addPeriodicTimeObserver(forInterval: CMTime(seconds: 5, preferredTimescale: 1), queue: .main) { time in
             MainActor.assumeIsolated {
                 BiliBiliUpnpDMR.shared.sendProgress(duration: duration, current: Int(time.seconds))
             }
@@ -57,10 +57,10 @@ class BUpnpPlugin: NSObject, CommonPlayerPlugin {
     }
 
     func playerDidCleanUp(player: AVPlayer) {
-        if let observar {
-            player.removeTimeObserver(observar)
+        if let observer {
+            player.removeTimeObserver(observer)
         }
-        observar = nil
+        observer = nil
         sendStatus(.stop)
     }
 

@@ -30,6 +30,20 @@ class PersonalViewController: UIViewController, BLTabBarContentVCProtocol, Child
         return view
     }()
 
+    /// 左侧竖向栏的玻璃底板（2026-11-01 用户反馈「日间模式白茫茫一片、可读性差」）。
+    /// 侧栏本身一直是无底色的，靠语义色文字直接压在页面底上；页面底一旦是浅色就白字白底。
+    /// 这里照顶部 Tab 栏的处理：给一条浮起的玻璃面，再压一层暗膜保证白字在两个模式下都够亮。
+    private let sidebarPanel: UIVisualEffectView = {
+        let view = UIVisualEffectView(effect: BLGlass.effect(.regular))
+        view.translatesAutoresizingMaskIntoConstraints = false
+        view.layer.cornerRadius = 32
+        view.layer.cornerCurve = .continuous
+        view.clipsToBounds = true
+        // 暗膜：玻璃自身跟着系统外观变化，白字需要一块下限亮度，不能只指望材质。
+        view.contentView.backgroundColor = UIColor.black.withAlphaComponent(0.32)
+        return view
+    }()
+
     private let profileContainerView: UIView = {
         let view = UIView()
         view.translatesAutoresizingMaskIntoConstraints = false
@@ -196,8 +210,16 @@ class PersonalViewController: UIViewController, BLTabBarContentVCProtocol, Child
     }
 
     private func setupUI() {
+        view.addSubview(sidebarPanel)
         view.addSubview(leftContainerView)
         view.addSubview(contentView)
+
+        sidebarPanel.snp.makeConstraints { make in
+            make.leading.equalToSuperview().offset(12)
+            make.trailing.equalTo(leftContainerView.snp.trailing).offset(-8)
+            make.top.equalTo(view.safeAreaLayoutGuide.snp.top).offset(8)
+            make.bottom.equalToSuperview().offset(-16)
+        }
 
         leftContainerView.addSubview(profileContainerView)
         leftContainerView.addSubview(leftCollectionView)

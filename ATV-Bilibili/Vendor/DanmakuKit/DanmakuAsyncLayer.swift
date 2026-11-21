@@ -159,7 +159,7 @@ class DanmakuAsyncLayer: CALayer {
                 let format = UIGraphicsImageRendererFormat.preferred()
                 format.opaque = opaque
                 format.scale = scale
-                let render = UIGraphicsImageRenderer(size: size)
+                let render = UIGraphicsImageRenderer(size: size, format: format)
                 let image = render.image { rendererContext in
                     if opaque {
                         rendererContext.cgContext.saveGState()
@@ -205,7 +205,7 @@ class DanmakuAsyncLayer: CALayer {
             let format = UIGraphicsImageRendererFormat.preferred()
             format.opaque = isOpaque
             format.scale = contentsScale
-            let render = UIGraphicsImageRenderer(size: bounds.size)
+            let render = UIGraphicsImageRenderer(size: bounds.size, format: format)
             let image = render.image { rendererContext in
                 displaying?(rendererContext.cgContext, bounds.size, { () -> Bool in return false })
             }

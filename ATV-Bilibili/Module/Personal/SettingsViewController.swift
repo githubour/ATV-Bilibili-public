@@ -115,214 +115,240 @@ class SettingsViewController: UIViewController {
 
     private func setupData() {
         createSnapshot {
-            SectionModel(title: "通用") {
-                Toggle(title: "启用投屏", setting: Settings.enableDLNA, onChange: Settings.enableDLNA.toggle()) {
-                    _ in
-                    BiliBiliUpnpDMR.shared.start()
-                }
+            makeGeneralSection()
+            makeInterfaceSection()
+            makeRecommendSection()
+            makeFollowsSection()
+            makeAudioVideoSection()
+            makeProgressSection()
+            makeDanmakuSection()
+            makeAreaLimitSection()
+        }
+    }
 
-                Toggle(title: "热门个性化推荐", setting: Settings.requestHotWithoutCookie, onChange: Settings.requestHotWithoutCookie.toggle())
+    // MARK: - 各设置分区（机械搬移自原 setupData 单函数，条目与行为未动）
 
-                Actions(title: "Top Shelf 内容来源", message: "Apple TV 主屏顶部展示的内容, 修改后需回到主屏等待刷新",
-                        current: Settings.topShelfSource.title,
-                        options: TopShelfSource.allCases,
-                        optionString: TopShelfSource.allCases.map({ $0.title }))
-                {
-                    Settings.topShelfSource = $0
-                    TopShelfSyncManager.shared.refresh(force: true)
-                }
+    private func makeGeneralSection() -> SectionModel {
+        SectionModel(title: "通用") {
+            Toggle(title: "启用投屏", setting: Settings.enableDLNA, onChange: Settings.enableDLNA.toggle()) {
+                _ in
+                BiliBiliUpnpDMR.shared.start()
+            }
 
-                // Top Shelf 排障用入口: 平时不显示状态, 点按才刷新并弹窗展示
-                CellModel(title: "Top Shelf 数据诊断", desp: "") { [weak self] update in
-                    Task { @MainActor in
-                        let message = await TopShelfSyncManager.shared.refreshAndReport(force: true)
-                        self?.presentAlert(title: "Top Shelf 状态", message: message)
-                        update()
-                    }
-                }
+            Toggle(title: "热门个性化推荐", setting: Settings.requestHotWithoutCookie, onChange: Settings.requestHotWithoutCookie.toggle())
 
-                CellModel(title: "关于", desp: "\(BuildInfo.marketingVersion) (\(BuildInfo.commitHash))") { [weak self] update in
-                    let message = """
-                    版本: \(BuildInfo.marketingVersion)
-                    构建: \(BuildInfo.buildNumber)
-                    提交: \(BuildInfo.commitHash)
-                    """
-                    self?.presentAlert(title: Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String ?? "哔哩哔哩", message: message)
+            Actions(title: "Top Shelf 内容来源", message: "Apple TV 主屏顶部展示的内容, 修改后需回到主屏等待刷新",
+                    current: Settings.topShelfSource.title,
+                    options: TopShelfSource.allCases,
+                    optionString: TopShelfSource.allCases.map({ $0.title }))
+            {
+                Settings.topShelfSource = $0
+                TopShelfSyncManager.shared.refresh(force: true)
+            }
+
+            // Top Shelf 排障用入口: 平时不显示状态, 点按才刷新并弹窗展示
+            CellModel(title: "Top Shelf 数据诊断", desp: "") { [weak self] update in
+                Task { @MainActor in
+                    let message = await TopShelfSyncManager.shared.refreshAndReport(force: true)
+                    self?.presentAlert(title: "Top Shelf 状态", message: message)
                     update()
                 }
             }
 
-            SectionModel(title: "界面") {
-                Navigation(title: "自定义 Tab 栏", desp: "") { [weak self] in
-                    let controller = TabBarCustomizationViewController()
-                    self?.present(controller, animated: true)
-                }
+            CellModel(title: "关于", desp: "\(BuildInfo.marketingVersion) (\(BuildInfo.commitHash))") { [weak self] update in
+                let message = """
+                版本: \(BuildInfo.marketingVersion)
+                构建: \(BuildInfo.buildNumber)
+                提交: \(BuildInfo.commitHash)
+                """
+                self?.presentAlert(title: Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String ?? "哔哩哔哩", message: message)
+                update()
+            }
+        }
+    }
 
-                Actions(title: "视频每行显示个数", message: "重启app生效",
-                        current: Settings.displayStyle.desp,
-                        options: FeedDisplayStyle.allCases.filter({ !$0.hideInSetting }),
-                        optionString: FeedDisplayStyle.allCases.filter({ !$0.hideInSetting }).map({ $0.desp }))
-                {
-                    Settings.displayStyle = $0
-                }
-                Toggle(title: "侧边栏菜单自动切换", setting: Settings.sideMenuAutoSelectChange, onChange: Settings.sideMenuAutoSelectChange.toggle())
-
-                Toggle(title: "不显示详情页直接进入视频",
-                       setting: Settings.directlyEnterVideo,
-                       onChange: Settings.directlyEnterVideo.toggle())
-
-                Actions(title: "视频详情相关推荐加载模式", message: "选择在详情页内刷新，或打开新页面",
-                        current: Settings.showRelatedVideoInCurrentVC ? "页面刷新" : "新页面中打开",
-                        options: [true, false],
-                        optionString: ["页面刷新", "新页面中打开"])
-                {
-                    Settings.showRelatedVideoInCurrentVC = $0
-                }
+    private func makeInterfaceSection() -> SectionModel {
+        SectionModel(title: "界面") {
+            Navigation(title: "自定义 Tab 栏", desp: "") { [weak self] in
+                let controller = TabBarCustomizationViewController()
+                self?.present(controller, animated: true)
             }
 
-            SectionModel(title: "推荐") {
-                Toggle(title: "使用沉浸式浏览模式",
-                       setting: Settings.recommendFeedFlowEnabled,
-                       onChange: Settings.recommendFeedFlowEnabled.toggle())
-                Actions(title: "沉浸式视频时长上限", message: "用于筛选沉浸式推荐中的短视频",
-                        current: Settings.featuredDurationLimit.title,
-                        options: FeaturedDurationLimit.allCases,
-                        optionString: FeaturedDurationLimit.allCases.map { $0.title })
-                {
-                    Settings.featuredDurationLimit = $0
-                }
-                Toggle(title: "沉浸式推荐内容安全过滤",
-                       setting: Settings.featuredContentSafetyFilterEnabled,
-                       onChange: Settings.featuredContentSafetyFilterEnabled.toggle())
+            Actions(title: "视频每行显示个数", message: "重启app生效",
+                    current: Settings.displayStyle.desp,
+                    options: FeedDisplayStyle.allCases.filter({ !$0.hideInSetting }),
+                    optionString: FeedDisplayStyle.allCases.filter({ !$0.hideInSetting }).map({ $0.desp }))
+            {
+                Settings.displayStyle = $0
             }
+            Toggle(title: "侧边栏菜单自动切换", setting: Settings.sideMenuAutoSelectChange, onChange: Settings.sideMenuAutoSelectChange.toggle())
 
-            SectionModel(title: "关注页面") {
-                Toggle(title: "关注刷视频模式",
-                       setting: Settings.followsFeedFlowEnabled,
-                       onChange: Settings.followsFeedFlowEnabled.toggle())
-                { _ in
-                    NotificationCenter.default.post(name: .followsLayoutModeDidChange, object: nil)
-                }
+            Toggle(title: "不显示详情页直接进入视频",
+                   setting: Settings.directlyEnterVideo,
+                   onChange: Settings.directlyEnterVideo.toggle())
+
+            Actions(title: "视频详情相关推荐加载模式", message: "选择在详情页内刷新，或打开新页面",
+                    current: Settings.showRelatedVideoInCurrentVC ? "页面刷新" : "新页面中打开",
+                    options: [true, false],
+                    optionString: ["页面刷新", "新页面中打开"])
+            {
+                Settings.showRelatedVideoInCurrentVC = $0
             }
+        }
+    }
 
-            SectionModel(title: "音视频") {
-                Actions(title: "最高画质", message: "4k以上需要大会员",
-                        current: Settings.mediaQuality.desp,
-                        options: MediaQualityEnum.allCases,
-                        optionString: MediaQualityEnum.allCases.map({ $0.desp }))
-                {
-                    Settings.mediaQuality = $0
-                }
-                Actions(title: "默认播放速度", message: "新视频默认沿用上次选择的倍速",
-                        current: Settings.mediaPlayerSpeed.name,
-                        options: PlaySpeed.blDefaults,
-                        optionString: PlaySpeed.blDefaults.map({ $0.name }))
-                {
-                    Settings.mediaPlayerSpeed = $0
-                }
-                Actions(title: "字幕起播",
-                        message: "先在播放器字幕菜单里选一条轨；开启后新视频自动沿用上次选择",
-                        current: Settings.subtitleAutoSelect && !Settings.subtitlePreferLan.isEmpty
-                            ? "自动显示上次选择" : "关闭",
-                        options: [false, true],
-                        optionString: ["关闭", "自动显示上次选择"])
-                {
-                    Settings.subtitleAutoSelect = $0
-                }
-                Toggle(title: "AVC 优先（卡顿时可尝试开启）", setting: Settings.preferAvc, onChange: Settings.preferAvc.toggle())
-                Toggle(title: "多 CDN 并发加速", setting: Settings.multiCDNEnabled, onChange: Settings.multiCDNEnabled.toggle())
-                Toggle(title: "无损音频和杜比全景声", setting: Settings.losslessAudio, onChange: Settings.losslessAudio.toggle())
-                Toggle(title: "匹配视频内容", setting: Settings.contentMatch, onChange: Settings.contentMatch.toggle())
-                Toggle(title: "仅在HDR视频匹配视频内容", setting: Settings.contentMatchOnlyInHDR, onChange: Settings.contentMatchOnlyInHDR.toggle())
+    private func makeRecommendSection() -> SectionModel {
+        SectionModel(title: "推荐") {
+            Toggle(title: "使用沉浸式浏览模式",
+                   setting: Settings.recommendFeedFlowEnabled,
+                   onChange: Settings.recommendFeedFlowEnabled.toggle())
+            Actions(title: "沉浸式视频时长上限", message: "用于筛选沉浸式推荐中的短视频",
+                    current: Settings.featuredDurationLimit.title,
+                    options: FeaturedDurationLimit.allCases,
+                    optionString: FeaturedDurationLimit.allCases.map { $0.title })
+            {
+                Settings.featuredDurationLimit = $0
             }
+            Toggle(title: "沉浸式推荐内容安全过滤",
+                   setting: Settings.featuredContentSafetyFilterEnabled,
+                   onChange: Settings.featuredContentSafetyFilterEnabled.toggle())
+        }
+    }
 
-            SectionModel(title: "进度控制") {
-                Toggle(title: "从上次退出的位置继续播放", setting: Settings.continuePlay, onChange: Settings.continuePlay.toggle())
-                Toggle(title: "自动跳过片头片尾", setting: Settings.autoSkip, onChange: Settings.autoSkip.toggle())
-                Toggle(title: "连续播放", setting: Settings.continuouslyPlay, onChange: Settings.continuouslyPlay.toggle())
-                Actions(title: "空降助手广告屏蔽", message: "",
-                        current: Settings.enableSponsorBlock.title,
-                        options: SponsorBlockType.allCases,
-                        optionString: SponsorBlockType.allCases.map({ $0.title }))
-                {
-                    Settings.enableSponsorBlock = $0
-                }
+    private func makeFollowsSection() -> SectionModel {
+        SectionModel(title: "关注页面") {
+            Toggle(title: "关注刷视频模式",
+                   setting: Settings.followsFeedFlowEnabled,
+                   onChange: Settings.followsFeedFlowEnabled.toggle())
+            { _ in
+                NotificationCenter.default.post(name: .followsLayoutModeDidChange, object: nil)
             }
+        }
+    }
 
-            SectionModel(title: "弹幕") {
-                Toggle(title: "用户自定义弹幕屏蔽", setting: Settings.enableDanmakuFilter, onChange: Settings.enableDanmakuFilter.toggle()) {
-                    enable in
-                    if enable {
-                        Task {
-                            let toast = await VideoDanmakuFilter.shared.update()
-                            self.presentDanmakuSyncResult(toast)
-                        }
-                    }
-                }
-                CellModel(title: "同步云端弹幕屏蔽词", desp: VideoDanmakuFilter.shared.syncStatusDescription) { [weak self] update in
-                    Task { @MainActor in
+    private func makeAudioVideoSection() -> SectionModel {
+        SectionModel(title: "音视频") {
+            Actions(title: "最高画质", message: "4k以上需要大会员",
+                    current: Settings.mediaQuality.desp,
+                    options: MediaQualityEnum.allCases,
+                    optionString: MediaQualityEnum.allCases.map({ $0.desp }))
+            {
+                Settings.mediaQuality = $0
+            }
+            Actions(title: "默认播放速度", message: "新视频默认沿用上次选择的倍速",
+                    current: Settings.mediaPlayerSpeed.name,
+                    options: PlaySpeed.blDefaults,
+                    optionString: PlaySpeed.blDefaults.map({ $0.name }))
+            {
+                Settings.mediaPlayerSpeed = $0
+            }
+            Actions(title: "字幕起播",
+                    message: "先在播放器字幕菜单里选一条轨；开启后新视频自动沿用上次选择",
+                    current: Settings.subtitleAutoSelect && !Settings.subtitlePreferLan.isEmpty
+                        ? "自动显示上次选择" : "关闭",
+                    options: [false, true],
+                    optionString: ["关闭", "自动显示上次选择"])
+            {
+                Settings.subtitleAutoSelect = $0
+            }
+            Toggle(title: "AVC 优先（卡顿时可尝试开启）", setting: Settings.preferAvc, onChange: Settings.preferAvc.toggle())
+            Toggle(title: "多 CDN 并发加速", setting: Settings.multiCDNEnabled, onChange: Settings.multiCDNEnabled.toggle())
+            Toggle(title: "无损音频和杜比全景声", setting: Settings.losslessAudio, onChange: Settings.losslessAudio.toggle())
+            Toggle(title: "匹配视频内容", setting: Settings.contentMatch, onChange: Settings.contentMatch.toggle())
+            Toggle(title: "仅在HDR视频匹配视频内容", setting: Settings.contentMatchOnlyInHDR, onChange: Settings.contentMatchOnlyInHDR.toggle())
+        }
+    }
+
+    private func makeProgressSection() -> SectionModel {
+        SectionModel(title: "进度控制") {
+            Toggle(title: "从上次退出的位置继续播放", setting: Settings.continuePlay, onChange: Settings.continuePlay.toggle())
+            Toggle(title: "自动跳过片头片尾", setting: Settings.autoSkip, onChange: Settings.autoSkip.toggle())
+            Toggle(title: "连续播放", setting: Settings.continuouslyPlay, onChange: Settings.continuouslyPlay.toggle())
+            Actions(title: "空降助手广告屏蔽", message: "",
+                    current: Settings.enableSponsorBlock.title,
+                    options: SponsorBlockType.allCases,
+                    optionString: SponsorBlockType.allCases.map({ $0.title }))
+            {
+                Settings.enableSponsorBlock = $0
+            }
+        }
+    }
+
+    private func makeDanmakuSection() -> SectionModel {
+        SectionModel(title: "弹幕") {
+            Toggle(title: "用户自定义弹幕屏蔽", setting: Settings.enableDanmakuFilter, onChange: Settings.enableDanmakuFilter.toggle()) {
+                enable in
+                if enable {
+                    Task {
                         let toast = await VideoDanmakuFilter.shared.update()
-                        self?.presentDanmakuSyncResult(toast)
-                        update()
+                        self.presentDanmakuSyncResult(toast)
                     }
                 }
-                TextField(title: "添加本地屏蔽词", message: "可一次粘贴多条：用空格 / 换行 / 逗号分隔。关键字大小写不敏感；正则用 /…/ 包裹，如 /透一下|我赌/(正则内不要有空格)。随「用户自定义弹幕屏蔽」开关一起生效",
-                          current: "", placeholder: "关键字，或 /正则/，可批量粘贴")
-                { word in
-                    guard let word else { return }
-                    VideoDanmakuFilter.shared.importLocalFilters(from: word)
-                }
-                CellModel(title: "管理本地屏蔽词", desp: "\(VideoDanmakuFilter.shared.localFilterCount) 条") { [weak self] update in
-                    self?.presentLocalFilterManageAlert(onChange: update)
-                }
-                Toggle(title: "移除重复弹幕", setting: Settings.enableDanmakuRemoveDup, onChange: Settings.enableDanmakuRemoveDup.toggle())
-                Toggle(title: "合并重复弹幕", setting: Settings.danmakuMergeDuplicates, onChange: Settings.danmakuMergeDuplicates.toggle())
-                Actions(title: "弹幕大小", message: "默认为36", current: Settings.danmakuSize.title, options: DanmakuSize.allCases, optionString: DanmakuSize.allCases.map({ $0.title })) {
-                    Settings.danmakuSize = $0
-                }
-                Actions(title: "弹幕显示区域", message: "设置弹幕显示区域",
-                        current: Settings.danmakuArea.title,
-                        options: DanmakuArea.allCases,
-                        optionString: DanmakuArea.allCases.map({ $0.title }))
-                {
-                    Settings.danmakuArea = $0
-                }
-                Toggle(title: "智能防挡弹幕", setting: Settings.danmakuMask, onChange: Settings.danmakuMask.toggle())
-                Toggle(title: "按需本地运算智能防挡弹幕（实验性）", setting: Settings.vnMask, onChange: Settings.vnMask.toggle())
-
-                // 添加弹幕透明度设置
-                Actions(title: "弹幕透明度", message: "调整弹幕的透明度",
-                        current: Settings.danmakuAlpha.title,
-                        options: DanmakuAlpha.allCases,
-                        optionString: DanmakuAlpha.allCases.map({ $0.title }))
-                { value in
-                    Settings.danmakuAlpha = value
-                }
-
-                // 添加弹幕描边宽度设置
-                Actions(title: "弹幕描边宽度", message: "调整弹幕描边的粗细",
-                        current: Settings.danmakuStrokeWidth.title,
-                        options: DanmakuStrokeWidth.allCases,
-                        optionString: DanmakuStrokeWidth.allCases.map({ $0.title }))
-                { value in
-                    Settings.danmakuStrokeWidth = value
-                }
-
-                // 添加弹幕描边透明度设置
-                Actions(title: "弹幕描边透明度", message: "调整弹幕描边的透明度",
-                        current: Settings.danmakuStrokeAlpha.title,
-                        options: DanmakuStrokeAlpha.allCases,
-                        optionString: DanmakuStrokeAlpha.allCases.map({ $0.title }))
-                { value in
-                    Settings.danmakuStrokeAlpha = value
+            }
+            CellModel(title: "同步云端弹幕屏蔽词", desp: VideoDanmakuFilter.shared.syncStatusDescription) { [weak self] update in
+                Task { @MainActor in
+                    let toast = await VideoDanmakuFilter.shared.update()
+                    self?.presentDanmakuSyncResult(toast)
+                    update()
                 }
             }
+            TextField(title: "添加本地屏蔽词", message: "可一次粘贴多条：用空格 / 换行 / 逗号分隔。关键字大小写不敏感；正则用 /…/ 包裹，如 /透一下|我赌/(正则内不要有空格)。随「用户自定义弹幕屏蔽」开关一起生效",
+                      current: "", placeholder: "关键字，或 /正则/，可批量粘贴")
+            { word in
+                guard let word else { return }
+                VideoDanmakuFilter.shared.importLocalFilters(from: word)
+            }
+            CellModel(title: "管理本地屏蔽词", desp: "\(VideoDanmakuFilter.shared.localFilterCount) 条") { [weak self] update in
+                self?.presentLocalFilterManageAlert(onChange: update)
+            }
+            Toggle(title: "移除重复弹幕", setting: Settings.enableDanmakuRemoveDup, onChange: Settings.enableDanmakuRemoveDup.toggle())
+            Toggle(title: "合并重复弹幕", setting: Settings.danmakuMergeDuplicates, onChange: Settings.danmakuMergeDuplicates.toggle())
+            Actions(title: "弹幕大小", message: "默认为36", current: Settings.danmakuSize.title, options: DanmakuSize.allCases, optionString: DanmakuSize.allCases.map({ $0.title })) {
+                Settings.danmakuSize = $0
+            }
+            Actions(title: "弹幕显示区域", message: "设置弹幕显示区域",
+                    current: Settings.danmakuArea.title,
+                    options: DanmakuArea.allCases,
+                    optionString: DanmakuArea.allCases.map({ $0.title }))
+            {
+                Settings.danmakuArea = $0
+            }
+            Toggle(title: "智能防挡弹幕", setting: Settings.danmakuMask, onChange: Settings.danmakuMask.toggle())
 
-            SectionModel(title: "港澳台解锁") {
-                Toggle(title: "解锁港澳台番剧限制", setting: Settings.areaLimitUnlock, onChange: Settings.areaLimitUnlock.toggle())
-                TextField(title: "设置港澳台解析服务器", message: "为了安全考虑建议自建服务器，公共服务器可用性难保证，请多尝试几个。\n公共服务器请参考：http://985.so/mjq9u", current: Settings.areaLimitCustomServer, placeholder: "api.example.com") {
-                    Settings.areaLimitCustomServer = $0 ?? ""
-                }
+            // 添加弹幕透明度设置
+            Actions(title: "弹幕透明度", message: "调整弹幕的透明度",
+                    current: Settings.danmakuAlpha.title,
+                    options: DanmakuAlpha.allCases,
+                    optionString: DanmakuAlpha.allCases.map({ $0.title }))
+            { value in
+                Settings.danmakuAlpha = value
+            }
+
+            // 添加弹幕描边宽度设置
+            Actions(title: "弹幕描边宽度", message: "调整弹幕描边的粗细",
+                    current: Settings.danmakuStrokeWidth.title,
+                    options: DanmakuStrokeWidth.allCases,
+                    optionString: DanmakuStrokeWidth.allCases.map({ $0.title }))
+            { value in
+                Settings.danmakuStrokeWidth = value
+            }
+
+            // 添加弹幕描边透明度设置
+            Actions(title: "弹幕描边透明度", message: "调整弹幕描边的透明度",
+                    current: Settings.danmakuStrokeAlpha.title,
+                    options: DanmakuStrokeAlpha.allCases,
+                    optionString: DanmakuStrokeAlpha.allCases.map({ $0.title }))
+            { value in
+                Settings.danmakuStrokeAlpha = value
+            }
+        }
+    }
+
+    private func makeAreaLimitSection() -> SectionModel {
+        SectionModel(title: "港澳台解锁") {
+            Toggle(title: "解锁港澳台番剧限制", setting: Settings.areaLimitUnlock, onChange: Settings.areaLimitUnlock.toggle())
+            TextField(title: "设置港澳台解析服务器", message: "为了安全考虑建议自建服务器，公共服务器可用性难保证，请多尝试几个。\n公共服务器请参考：https://github.com/yujincheng08/BiliRoaming/wiki/公共解析服务器", current: Settings.areaLimitCustomServer, placeholder: "api.example.com") {
+                Settings.areaLimitCustomServer = $0 ?? ""
             }
         }
     }
@@ -438,7 +464,8 @@ extension SettingsViewController: UICollectionViewDelegate {
     }
 
     func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
-        let cellModel = dataSource.itemIdentifier(for: indexPath)!
+        // 快照更新瞬间可能拿到过期的 indexPath，itemIdentifier 为 nil 时静默忽略（审核行动项 #8）
+        guard let cellModel = dataSource.itemIdentifier(for: indexPath) else { return }
         cellModel.action?() { [weak cellModel] in
             cellModel?.updateAction?()
         }

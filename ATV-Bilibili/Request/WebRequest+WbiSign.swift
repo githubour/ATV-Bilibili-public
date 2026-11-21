@@ -59,143 +59,152 @@ extension WebRequest {
     }
 
     // https://github.com/SocialSisterYi/bilibili-API-collect/blob/master/docs/misc/sign/wbi.md#Swift
+    /// 原 184 行三层嵌套闭包拆成三段：取 keys → 取 webId → 纯函数拼签名串，逻辑逐字未动。
     private static func biliWbiSign(param: String, completion: @escaping (String?) -> Void) {
-        func getWebId(needRefresh: Bool = false, completion: @escaping (String?) -> Void) {
-            if let cached = WebIdCache.shared.webId, !needRefresh {
-                completion(cached)
-                return
-            }
-
-            // Generate random visit_id (16 char lowercase hex string)
-            let visitId = UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(16).lowercased()
-            let urlString = "https://live.bilibili.com/p/eden/area-tags?parentAreaId=2&areaId=0&visit_id=\(visitId)"
-
-            guard let url = URL(string: urlString) else {
-                completion(nil)
-                return
-            }
-
-            var request = URLRequest(url: url)
-            request.setValue(Keys.userAgent, forHTTPHeaderField: "User-Agent")
-            request.setValue(Keys.liveReferer, forHTTPHeaderField: "Referer")
-
-            if let cookieHeader = CookieHandler.shared.cookieHeader(for: url) {
-                request.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
-            }
-
-            let task = wbiURLSession.dataTask(with: request) { data, response, error in
-                guard let data = data,
-                      let html = String(data: data, encoding: .utf8),
-                      error == nil
-                else {
-                    completion(nil)
-                    return
-                }
-
-                do {
-                    // Look for window._render_data_ = {"access_id":"..."}
-                    let regex = try NSRegularExpression(pattern: #"window\._render_data_\s*=\s*\{\"access_id\":\"([^\"]+)\""#, options: [])
-                    if let match = regex.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)),
-                       let range = Range(match.range(at: 1), in: html)
-                    {
-                        let accessId = String(html[range])
-                        WebIdCache.shared.store(accessId)
-                        completion(accessId)
-                        return
-                    }
-                } catch {}
-
-                completion(nil)
-            }
-            task.resume()
-        }
-
-        func getWbiKeys(completion: @escaping (Result<(imgKey: String, subKey: String, refresh: Bool), Error>) -> Void) {
-            if let cached = WbiKeysCache.shared.cachedKeys(maxAge: 60 * 60 * 2) {
-                completion(.success((cached.imgKey, cached.subKey, false)))
-                return
-            }
-
-            var headers: HTTPHeaders = [
-                "User-Agent": Keys.userAgent,
-                "Referer": Keys.referer,
-            ]
-            if let cookieHeader = CookieHandler.shared.cookieHeader(forURL: WebRequest.EndPoint.nav) {
-                headers.add(HTTPHeader(name: "Cookie", value: cookieHeader))
-            }
-
-            wbiAFSession.request(WebRequest.EndPoint.nav, headers: headers).responseData { response in
-                switch response.result {
-                case let .success(value):
-                    let imgURL = APIResponse.string(from: value, path: "data", "wbi_img", "img_url")
-                    let subURL = APIResponse.string(from: value, path: "data", "wbi_img", "sub_url")
-                    let imgKey = imgURL.components(separatedBy: "/").last?.components(separatedBy: ".").first ?? ""
-                    let subKey = subURL.components(separatedBy: "/").last?.components(separatedBy: ".").first ?? ""
-                    // nav 响应结构变化/风控页会解析出空串：绝不能当 success 往下走，
-                    // deriveMixinKey 对短串取下标会直接越界崩溃——签名失败降级即可
-                    guard !imgKey.isEmpty, !subKey.isEmpty else {
-                        completion(.failure(WbiSignError.emptyKeys))
-                        return
-                    }
-                    WbiKeysCache.shared.update(imgKey: imgKey, subKey: subKey)
-                    completion(.success((imgKey, subKey, true)))
-                case let .failure(error):
-                    completion(.failure(error))
-                }
-            }
-        }
-
-        getWbiKeys { result in
+        fetchWbiKeys { result in
             switch result {
             case let .success(keys):
-                getWebId(needRefresh: keys.refresh) { webId in
-                    let spdParam = param.components(separatedBy: "&")
-                    var spdDicParam = [String: String]()
-                    for pair in spdParam {
-                        // 只按第一个 = 切分：值里允许出现 =（例如 base64 / 用户输入）
-                        let components = pair.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
-                        if components.count == 2 {
-                            // URL decode the parameter value
-                            let decodedValue = String(components[1]).removingPercentEncoding ?? String(components[1])
-                            spdDicParam[String(components[0])] = decodedValue
-                        }
-                    }
-
-                    // Add w_webid parameter
-                    if let webId = webId {
-                        spdDicParam["w_webid"] = webId
-                    }
-
-                    let signedParams = WbiCrypto.encWbi(params: spdDicParam, imgKey: keys.imgKey, subKey: keys.subKey)
-
-                    // Correct parameter ordering (reference: bilibili-plus)
-                    let wbiKeys = ["w_webid", "w_rid", "wts"]
-                    var orderedParams = signedParams
-                        .filter { !wbiKeys.contains($0.key) }
-                        .sorted { $0.key < $1.key }
-                        .map { "\($0.key)=\($0.value)" }
-
-                    // Append WBI parameters in fixed order
-                    for key in wbiKeys {
-                        if let value = signedParams[key] {
-                            orderedParams.append("\(key)=\(value)")
-                        }
-                    }
-
-                    // 签名串用原始值（与既有算法一致）；发出去的 query 必须把值里的
-                    // & + = # 编码掉，否则会被服务端当成新的参数边界，导致签名错位。
-                    let query = orderedParams.map { pair -> String in
-                        let parts = pair.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
-                        guard parts.count == 2 else { return pair }
-                        return "\(parts[0])=\(WbiCrypto.escapeQueryValue(String(parts[1])))"
-                    }.joined(separator: "&")
-                    completion(query)
+                fetchWebId(needRefresh: keys.refresh) { webId in
+                    completion(buildSignedQuery(param: param, webId: webId, imgKey: keys.imgKey, subKey: keys.subKey))
                 }
             case let .failure(error):
                 Logger.warn("[wbi] get keys fail: \(error)")
                 completion(nil)
             }
         }
+    }
+
+    /// 拉 wbi_img 的 img/sub key（2 小时缓存，nav 响应异常时返回失败而不是空串往下走）。
+    private static func fetchWbiKeys(completion: @escaping (Result<(imgKey: String, subKey: String, refresh: Bool), Error>) -> Void) {
+        if let cached = WbiKeysCache.shared.cachedKeys(maxAge: 60 * 60 * 2) {
+            completion(.success((cached.imgKey, cached.subKey, false)))
+            return
+        }
+
+        var headers: HTTPHeaders = [
+            "User-Agent": Keys.userAgent,
+            "Referer": Keys.referer,
+        ]
+        if let cookieHeader = CookieHandler.shared.cookieHeader(forURL: WebRequest.EndPoint.nav) {
+            headers.add(HTTPHeader(name: "Cookie", value: cookieHeader))
+        }
+
+        wbiAFSession.request(WebRequest.EndPoint.nav, headers: headers).responseData { response in
+            switch response.result {
+            case let .success(value):
+                let imgURL = APIResponse.string(from: value, path: "data", "wbi_img", "img_url")
+                let subURL = APIResponse.string(from: value, path: "data", "wbi_img", "sub_url")
+                let imgKey = imgURL.components(separatedBy: "/").last?.components(separatedBy: ".").first ?? ""
+                let subKey = subURL.components(separatedBy: "/").last?.components(separatedBy: ".").first ?? ""
+                // nav 响应结构变化/风控页会解析出空串：绝不能当 success 往下走，
+                // deriveMixinKey 对短串取下标会直接越界崩溃——签名失败降级即可
+                guard !imgKey.isEmpty, !subKey.isEmpty else {
+                    completion(.failure(WbiSignError.emptyKeys))
+                    return
+                }
+                WbiKeysCache.shared.update(imgKey: imgKey, subKey: subKey)
+                completion(.success((imgKey, subKey, true)))
+            case let .failure(error):
+                completion(.failure(error))
+            }
+        }
+    }
+
+    /// 从直播间页 HTML 抓 visit_id（access_id）作 w_webid；needRefresh 时绕过缓存重抓。
+    private static func fetchWebId(needRefresh: Bool = false, completion: @escaping (String?) -> Void) {
+        if let cached = WebIdCache.shared.webId, !needRefresh {
+            completion(cached)
+            return
+        }
+
+        // Generate random visit_id (16 char lowercase hex string)
+        let visitId = UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(16).lowercased()
+        let urlString = "https://live.bilibili.com/p/eden/area-tags?parentAreaId=2&areaId=0&visit_id=\(visitId)"
+
+        guard let url = URL(string: urlString) else {
+            completion(nil)
+            return
+        }
+
+        var request = URLRequest(url: url)
+        request.setValue(Keys.userAgent, forHTTPHeaderField: "User-Agent")
+        request.setValue(Keys.liveReferer, forHTTPHeaderField: "Referer")
+
+        if let cookieHeader = CookieHandler.shared.cookieHeader(for: url) {
+            request.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
+        }
+
+        let task = wbiURLSession.dataTask(with: request) { data, response, error in
+            guard let data = data,
+                  let html = String(data: data, encoding: .utf8),
+                  error == nil
+            else {
+                completion(nil)
+                return
+            }
+
+            do {
+                // Look for window._render_data_ = {"access_id":"..."}
+                let regex = try NSRegularExpression(pattern: #"window\._render_data_\s*=\s*\{\"access_id\":\"([^\"]+)\""#, options: [])
+                if let match = regex.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)),
+                   let range = Range(match.range(at: 1), in: html)
+                {
+                    let accessId = String(html[range])
+                    WebIdCache.shared.store(accessId)
+                    completion(accessId)
+                    return
+                }
+            } catch {}
+
+            completion(nil)
+        }
+        task.resume()
+    }
+
+    /// 签名收尾（纯函数）：query 解码回字典 → 补 w_webid → encWbi 签名 →
+    /// 固定顺序（其余按字典序，w_webid/w_rid/wts 收尾）→ 对发出值做结构字符转义。
+    private static func buildSignedQuery(param: String, webId: String?, imgKey: String, subKey: String) -> String {
+        let spdParam = param.components(separatedBy: "&")
+        var spdDicParam = [String: String]()
+        for pair in spdParam {
+            // 只按第一个 = 切分：值里允许出现 =（例如 base64 / 用户输入）
+            let components = pair.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+            if components.count == 2 {
+                // URL decode the parameter value
+                let decodedValue = String(components[1]).removingPercentEncoding ?? String(components[1])
+                spdDicParam[String(components[0])] = decodedValue
+            }
+        }
+
+        // Add w_webid parameter
+        if let webId = webId {
+            spdDicParam["w_webid"] = webId
+        }
+
+        let signedParams = WbiCrypto.encWbi(params: spdDicParam, imgKey: imgKey, subKey: subKey)
+
+        // Correct parameter ordering (reference: bilibili-plus)
+        let wbiKeys = ["w_webid", "w_rid", "wts"]
+        var orderedParams = signedParams
+            .filter { !wbiKeys.contains($0.key) }
+            .sorted { $0.key < $1.key }
+            .map { "\($0.key)=\($0.value)" }
+
+        // Append WBI parameters in fixed order
+        for key in wbiKeys {
+            if let value = signedParams[key] {
+                orderedParams.append("\(key)=\(value)")
+            }
+        }
+
+        // 签名串用原始值（与既有算法一致）；发出去的 query 必须把值里的
+        // & + = # 编码掉，否则会被服务端当成新的参数边界，导致签名错位。
+        let query = orderedParams.map { pair -> String in
+            let parts = pair.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+            guard parts.count == 2 else { return pair }
+            return "\(parts[0])=\(WbiCrypto.escapeQueryValue(String(parts[1])))"
+        }.joined(separator: "&")
+        return query
     }
 
     // MARK: - WbiKeys Cache

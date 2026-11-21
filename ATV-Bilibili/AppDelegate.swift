@@ -19,7 +19,13 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
         Logger.setup()
-        ImageCache.default.diskStorage.config.sizeLimit = 500 * 1024 * 1024
+        ImageCache.default.diskStorage.config.sizeLimit = 120 * 1024 * 1024
+        // 内存缓存显式封顶：Kingfisher 默认按物理内存/4 且条目数不限，Apple TV 上等于
+        // 750MB~1GB 的无上界缓存；150MB / 300 张足够列表页流畅浏览
+        ImageCache.default.memoryStorage.config.totalCostLimit = 150 * 1024 * 1024
+        ImageCache.default.memoryStorage.config.countLimit = 300
+        // 旧版本上限是 500MB，已装设备的缓存可能远超新上限；启动时先按新上限清一次，不必等退后台
+        ImageCache.default.cleanExpiredDiskCache()
         AccountManager.shared.bootstrap()
         BiliBiliUpnpDMR.shared.start()
         // 首页请求只用于让服务端回种匿名 cookie 并回写账号 cookie；未登录(还在登录页)时没必要在冷启动抢带宽

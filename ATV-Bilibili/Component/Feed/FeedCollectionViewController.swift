@@ -179,7 +179,9 @@ class FeedCollectionViewController: UIViewController {
         }
         updateEmptyState()
 
-        if _displayData.count < 12 {
+        // !newItems.isEmpty: 尽头附近 offset 停滞 + 条目重复时, 去重后零新增会让
+        // _displayData.count 恒 <12, 链式 loadMore 会无限打接口 —— 零新增即停链
+        if _displayData.count < 12, !newItems.isEmpty {
             isLoading = true
             loadMore?()
         }
@@ -187,6 +189,9 @@ class FeedCollectionViewController: UIViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        // 卡片自身不铺底色（标题/作者走语义色），页面必须给一块稳定深色：
+        // 否则日间模式下透出系统浅色底，白字压白底（用户 2026-11-01 反馈）。
+        view.backgroundColor = UIColor(white: 0.06, alpha: 1)
         collectionView = UICollectionView(frame: .zero, collectionViewLayout: makeCollectionViewLayout())
         view.addSubview(collectionView)
         collectionView.snp.makeConstraints { make in

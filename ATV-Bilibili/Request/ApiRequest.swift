@@ -18,8 +18,10 @@ struct LoginToken: Codable, Equatable {
 }
 
 enum ApiRequest {
-    static let appkey = "5ae412b53418aac5"
-    static let appsec = "5b9cf6c9786efd204dcf0c1ce2d08436"
+    /// App 接口凭据：优先取自 Info.plist（构建变量 BILIBILI_APPKEY / BILIBILI_APPSECRET 可覆盖），
+    /// 缺省回落到 B 站公开 TV 端常量。来源与配置方式见 BilibiliCredential.swift。
+    static let appkey = BilibiliCredential.appKey
+    static let appsec = BilibiliCredential.appSecret
 
     /// App 接口专用会话：关闭 URLSession 自身的 Cookie 存储，
     /// 统一由 CookieHandler 按请求快照注入，避免共享存储里的旧账号 cookie 混入。

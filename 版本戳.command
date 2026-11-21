@@ -22,6 +22,10 @@ set -o pipefail
 # ============================================
 cd "$(dirname "$0")" || exit 1
 
+# 本机私有值统一在 local.env（已 gitignore）。本脚本目前不读任何私有值，
+# 这里只统一入口：有 local.env 就加载，没有也不影响版本戳（CI 环境同样可跑）。
+if [ -f ./local.env ]; then . ./local.env; fi
+
 BUILD_INFO="ATV-Bilibili/BuildInfo.swift"
 APP_PLIST="ATV-Bilibili/Supporting Files/Info.plist"
 SHELF_PLIST="TopShelf/Info.plist"

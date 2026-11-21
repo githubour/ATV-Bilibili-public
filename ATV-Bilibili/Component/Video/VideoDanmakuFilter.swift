@@ -5,7 +5,7 @@
 //  Created by yicheng on 2024/12/13.
 //
 
-import UIKit
+import Foundation
 
 class VideoDanmakuFilter {
     static let shared = VideoDanmakuFilter()
@@ -23,47 +23,35 @@ class VideoDanmakuFilter {
         rebuildBuiltinFilters()
     }
 
-    /// 弹幕是否应保留。midHash 为发送者的 midHash，用于匹配「屏蔽用户」规则(type 2)
-    func accept(_ danmaku: String, midHash: String) -> Bool {
-        if !midHash.isEmpty, userHashFilters.contains(midHash.lowercased()) {
+    /// 后台过滤用不可变快照：写侧（refreshCache/rebuild*/resetCloudRules）全在主线程，
+    /// 快照在发起后台过滤前于主线程构造——成员全值类型，拷贝后与写侧隔离无需加锁
+    /// （Regex 未标 Sendable 但为值类型，只读快照跨线程安全）。
+    struct FilterSnapshot: @unchecked Sendable {
+        let stringFilters: [String]
+        let regexFilters: [Regex<AnyRegexOutput>]
+        let userHashFilters: Set<String>
+    }
+
+    /// 关键字/正则各按「本地→内置→云端」合并；accept 是纯谓词，合并顺序不影响结果
+    func makeSnapshot() -> FilterSnapshot {
+        FilterSnapshot(stringFilters: localStringFilters + builtinStringFilters + stringFilters,
+                       regexFilters: localRegexFilters + builtinRegexFilters + regexFilters,
+                       userHashFilters: userHashFilters)
+    }
+
+    /// 弹幕是否应保留（任意线程）。midHash 用于匹配「屏蔽用户」规则(type 2)
+    static func accept(_ danmaku: String, midHash: String, with snapshot: FilterSnapshot) -> Bool {
+        if !midHash.isEmpty, snapshot.userHashFilters.contains(midHash.lowercased()) {
             return false
         }
 
         let loweredDanmaku = danmaku.lowercased()
-        for filter in localStringFilters {
-            if loweredDanmaku.contains(filter) {
-                return false
-            }
+        for filter in snapshot.stringFilters where loweredDanmaku.contains(filter) {
+            return false
         }
 
-        for regex in localRegexFilters {
-            if danmaku.contains(regex) {
-                return false
-            }
-        }
-
-        for filter in builtinStringFilters {
-            if loweredDanmaku.contains(filter) {
-                return false
-            }
-        }
-
-        for regex in builtinRegexFilters {
-            if danmaku.contains(regex) {
-                return false
-            }
-        }
-
-        for filter in stringFilters {
-            if loweredDanmaku.contains(filter) {
-                return false
-            }
-        }
-
-        for filter in regexFilters {
-            if danmaku.contains(filter) {
-                return false
-            }
+        for regex in snapshot.regexFilters where danmaku.contains(regex) {
+            return false
         }
         return true
     }

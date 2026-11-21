@@ -134,4 +134,19 @@ final class PagedProviderTests: XCTestCase {
         XCTAssertEqual(provider.items, Array(0..<40) + [99])
         XCTAssertEqual(source.fetchedPages, [1, 2])
     }
+
+    /// 取消后提前 return 也必须复位 requesting，否则后续滚动分页会永久卡住。
+    func test_cancelledRefresh_clearsRequesting() async {
+        let source = StubSource()
+        source.script[1] = .success(Array(0..<40))
+        let provider = source.makeProvider()
+        await provider.performRefresh()
+        XCTAssertTrue(provider.shouldLoadMore(atIndex: 39))
+
+        let task = Task { await provider.performRefresh() }
+        task.cancel()
+        await task.value
+
+        XCTAssertTrue(provider.shouldLoadMore(atIndex: 39), "取消的刷新必须复位 requesting")
+    }
 }

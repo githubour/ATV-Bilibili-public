@@ -3,10 +3,11 @@
 //  ATV-Bilibili
 //
 //  「片头片尾标记」插件：
-//  - 「更多设置」独立齿轮按钮（传输栏顶级菜单，与「播放设置」「弹幕设置」并列）：
+//  - 「更多设置」独立齿轮按钮（传输栏顶级菜单，与「播放设置」「显示弹幕」并列）：
 //    · 片头片尾组：标记当前进度为片头 / 片尾（副标题显示当前已标记时长）、
 //      清除片头 / 清除片尾（未标记时置灰）、自动跳过片头 / 自动跳过片尾开关（默认开）
-//    · 公共挂载点（.moreMenu）：CDN 测速 / Debug / 循环播放 / 查看详情也收在这里，
+//    · 公共挂载点（.moreMenu）：CDN 测速 / 弹幕设置三组（展示时长/字号/屏蔽等级）/
+//      Debug / 循环播放 / 查看详情也收在这里，
 //      本插件必须排在 BVideoPlayPlugin / DebugPlugin / VideoPlayListPlugin 之前注册
 //  - 标记点按内容键持久化（番剧按 season_id、普通视频按 aid，同一部番所有集共用）：
 //    片头标记 = 片头结束时刻（绝对秒，跨集直接沿用，即「0 + 秒数」）；
@@ -195,7 +196,7 @@ class IntroOutroSkipPlugin: NSObject, CommonPlayerPlugin {
         let toggleGroup = UIMenu(options: .displayInline, children: [autoIntro, autoOutro])
 
         // 顶级菜单 = 传输栏独立齿轮按钮；带 .moreMenu 标识，
-        // CDN 测速/Debug/循环播放/查看详情等条目也挂进这里（见各插件 insertIntoMenu）
+        // CDN 测速/弹幕设置三组/Debug/循环播放/查看详情等条目也挂进这里（见各插件 insertIntoMenu）
         return [UIMenu(title: "更多设置",
                        image: UIImage(systemName: "gearshape"),
                        identifier: .moreMenu,

@@ -5,7 +5,7 @@ set -o pipefail
 #
 #  「定位电视 → xcodebuild → 找产物 → devicectl 安装」这一串原本在三个入口里各抄了一份，
 #  现在收在这里；三个入口只剩「设好环境变量 + 调 atv_install」：
-#    · 装机.command           读 本机-配置.sh（或命令行传入），中性兜底
+#    · 装机.command           读 local.env（经 atv-env.sh），中性兜底
 #    · 本机-装机-example.command  把值写死在本机脚本里（不导出到公共仓库）
 #    · 本机-装机-example.command  同上
 #
@@ -22,8 +22,8 @@ set -o pipefail
 #  ⚠ 这里的输出是契约，不要随意改：
 #    · 签名自动续签.sh 会在整个脚本输出里 grep "BUILD SUCCEEDED" 判定构建是否成功，
 #      并 grep 设备不可达特征串（休眠/离线）判断值不值得下个周期重试
-#    · 因此构建日志必须照常打印（保留 `tail -30` 让该行留在输出里），
-#      失败文案也保持原样
+#    · 构建成功后由本脚本显式 echo "BUILD SUCCEEDED"，不依赖 xcodebuild 输出
+#      恰好落在 `tail -30` 窗口内；失败时不打印该标记，失败文案保持原样
 # ============================================
 
 atv_install() {
@@ -34,6 +34,8 @@ atv_install() {
   local udid="${ATV_UDID:-}"
   if [ -z "$udid" ]; then
     echo "✗ 缺少 ATV_UDID（Apple TV 的 UDID）"
+    echo "  在仓库根 local.env 里填 ATV_UDID（字段说明见 local.env.example）"
+    echo "  查法: xcrun devicectl list devices"
     return 1
   fi
 
@@ -41,7 +43,12 @@ atv_install() {
   [ -n "${ATV_LABEL:-}" ] && tag="[${ATV_LABEL}] "
 
   echo "▶ ${tag}正在定位 Apple TV ($udid)..."
-  xcrun devicectl list devices 2>/dev/null | grep -qi "$udid\|apple tv" || {
+  # 按 UDID 直连查询，不用 `devicectl list`：后者依赖 mDNS 发现，本机网络下时有时无。
+  # 不能写 `xcrun … | grep -q`：pipefail 下 grep -q 提前退出会让 xcrun 吃 SIGPIPE(141) 误判失败，
+  # 所以照 preflight 的写法捕获成变量再判。失败文案是输出契约，勿改
+  local dev_state
+  dev_state=$(xcrun devicectl device info details --device "$udid" 2>/dev/null | grep -m1 "Device State" | sed 's/.*: //')
+  [ -n "$dev_state" ] || {
     echo "✗ 没找到 Apple TV。请确认:"
     echo "  1. Apple TV 与本机在同一局域网（同一 WiFi 网段）"
     echo "  2. 电视已唤醒 —— 待机状态无法安装"
@@ -57,20 +64,24 @@ atv_install() {
 
   echo "▶ ${tag}构建（Release，用 Xcode 里已登录的 Apple ID 自动签名）..."
   # tee 全量日志到固定文件：xcodebuild 真正的报错常在 tail -30 之外，失败时只看最后 30 行经常不够定位。
-  # 注意输出契约：签名自动续签.sh 会 grep 本段输出里的 "BUILD SUCCEEDED" 与设备不可达特征串，
-  # tee+tail 保持它们照常出现在 stdout，失败文案也只追加不改写。
+  # 注意输出契约：签名自动续签.sh 会 grep 本段输出里的 "BUILD SUCCEEDED" 与设备不可达特征串；
+  # 成功标记在管道之后由本函数显式打印，不靠 tail 窗口，失败文案也只追加不改写。
   local log="$HOME/Library/Logs/atv-bilibili-build.log"
   mkdir -p "$(dirname "$log")"
+  # swifter 按 branch 钉住，默认解析每次都联网 fetch；外网不通时靠这两个参数强制走 Package.resolved + 本地缓存
   xcodebuild -project ATV-Bilibili.xcodeproj \
     -scheme ATV-Bilibili \
     -configuration Release \
     -destination "platform=tvOS,id=$udid" \
     -allowProvisioningUpdates \
+    -skipPackageUpdates \
+    -onlyUsePackageVersionsFromResolvedFile \
     "${args[@]}" \
     build 2>&1 | tee "$log" | tail -30 || {
     echo "✗ 构建失败，请把上面的报错贴出来（完整日志: $log）"
     return 1
   }
+  echo "BUILD SUCCEEDED"
 
   # 只匹配真机产物目录 appletvos —— 必须排除 appletvsimulator：
   # 模拟器产物混装会报 0xe8008014 invalid signature

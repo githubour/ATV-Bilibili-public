@@ -11,7 +11,7 @@ import UIKit
 extension UIMenu.Identifier {
     /// 「播放设置」子菜单（由 SpeedChangerPlugin 创建），只放播放速度
     static let playerSettingMenu = UIMenu.Identifier(rawValue: "setting")
-    /// 「更多」齿轮菜单（由 IntroOutroSkipPlugin 创建），CDN 测速/Debug/循环播放/查看详情等挂进它
+    /// 「更多」齿轮菜单（由 IntroOutroSkipPlugin 创建），CDN 测速/弹幕设置三组/Debug/循环播放/查看详情等挂进它
     static let moreMenu = UIMenu.Identifier(rawValue: "more")
 }
 

@@ -151,8 +151,16 @@ extension DanmakuViewPlugin: CommonPlayerPlugin {
         let danmakuAILevelMenu = UIMenu(title: "弹幕屏蔽等级", options: [.displayInline, .singleSelection], children: [Int32](1...10).map { level in
             UIAction(title: "\(level)", state: level == Settings.danmakuAILevel ? .on : .off) { _ in Settings.danmakuAILevel = level }
         })
-        let danmakuSettingMenu = UIMenu(title: "弹幕设置", image: UIImage(systemName: "keyboard.badge.ellipsis"), children: [danmakuDurationMenu, danmakuSizeMenu, danmakuAILevelMenu])
-
-        return [danmakuAction, danmakuSettingMenu]
+        // 三组设置平铺进「更多设置」齿轮（均为 displayInline 分组，与片头/片尾组同款渲染），
+        // 传输栏顶级只留「显示弹幕」快捷开关
+        let flattened = insertIntoMenu([danmakuDurationMenu, danmakuSizeMenu, danmakuAILevelMenu],
+                                       menu: .moreMenu,
+                                       current: &current,
+                                       fallbackToTopLevel: true)
+        if flattened.isEmpty {
+            return [danmakuAction]
+        }
+        // 预览模式没有「更多设置」挂载点：退回顶级时包回原「弹幕设置」子菜单壳
+        return [danmakuAction, UIMenu(title: "弹幕设置", image: UIImage(systemName: "keyboard.badge.ellipsis"), children: flattened)]
     }
 }

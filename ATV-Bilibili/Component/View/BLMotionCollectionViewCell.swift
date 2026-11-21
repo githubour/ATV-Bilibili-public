@@ -34,6 +34,13 @@ class BLMotionCollectionViewCell: UICollectionViewCell {
         motionEffectH.minimumRelativeValue = -8
     }
 
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        // 阴影贴卡片矩形路径：不给 path 时 Core Animation 按图层 alpha 轮廓逐帧计算，
+        // 聚焦缩放 + 视差动画期间是持续的离屏渲染开销
+        layer.shadowPath = UIBezierPath(roundedRect: bounds, cornerRadius: 12).cgPath
+    }
+
     /// 复用/离屏时停住跑马灯 (与失焦同款动作)
     func suspendFocusMarquee() {
         for focusMarqueeLabel in focusMarqueeLabels {

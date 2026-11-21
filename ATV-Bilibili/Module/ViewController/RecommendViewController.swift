@@ -1,9 +1,11 @@
 import UIKit
 
 /// Keeps the existing recommendation tab stable while switching its presentation.
-final class RecommendViewController: UIViewController, BLTabBarContentVCProtocol {
+final class RecommendViewController: UIViewController, BLTabBarContentVCProtocol, ChildContentContainer {
     private var activeMode: Bool?
-    private var contentViewController: UIViewController?
+    /// 子内容铺满整页，容器自身的 view 即承载视图
+    var contentView: UIView { view }
+    var currentViewController: UIViewController?
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -16,29 +18,19 @@ final class RecommendViewController: UIViewController, BLTabBarContentVCProtocol
     }
 
     override var preferredFocusEnvironments: [any UIFocusEnvironment] {
-        contentViewController.map { [$0] } ?? super.preferredFocusEnvironments
+        currentViewController.map { [$0] } ?? super.preferredFocusEnvironments
     }
 
     func reloadData() {
-        (contentViewController as? BLTabBarContentVCProtocol)?.reloadData()
+        forwardReloadToContentViewController()
     }
 
     private func updateContentIfNeeded() {
         let usesFeedFlow = Settings.recommendFeedFlowEnabled
         guard activeMode != usesFeedFlow else { return }
 
-        let next = usesFeedFlow ? FeaturedBrowserViewController() : FeedViewController()
-        contentViewController?.willMove(toParent: nil)
-        contentViewController?.view.removeFromSuperview()
-        contentViewController?.removeFromParent()
-
-        addChild(next)
-        next.view.frame = view.bounds
-        next.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        view.addSubview(next.view)
-        next.didMove(toParent: self)
-
-        contentViewController = next
+        // 原实现用 frame + autoresizingMask 铺满，setViewController 的四边约束等价
+        setViewController(vc: usesFeedFlow ? FeaturedBrowserViewController() : FeedViewController())
         activeMode = usesFeedFlow
     }
 }

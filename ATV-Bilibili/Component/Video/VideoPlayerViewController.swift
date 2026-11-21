@@ -185,6 +185,8 @@ class VideoPlayerViewController: CommonPlayerViewController {
     var onPlaybackStarted: (() -> Void)?
     var onPlayInfoChanged: ((PlayInfo) -> Void)?
     var onDismissWithPlayInfo: ((PlayInfo) -> Void)?
+    /// 退出播放器时回传最后一集与实际进度（普通详情页用它回写选集状态；preview 不回调）
+    var onDismissPlayback: ((PlayInfo, Int?) -> Void)?
 
     private let playMode: VideoPlayerMode
     private let playContextCache: PlayContextCache?
@@ -289,11 +291,14 @@ class VideoPlayerViewController: CommonPlayerViewController {
 
     override func viewDidDisappear(_ animated: Bool) {
         let isExiting = isBeingDismissed || isMovingFromParent || navigationController?.isBeingDismissed == true
-        let dismissPlayInfo = playMode == .feedFlow ? viewModel.currentPlayInfo : nil
+        // 先取快照：super 之后 player 可能已被清理，进度会读不到
+        let dismissPlayInfo = playMode == .preview ? nil : viewModel.currentPlayInfo
+        let dismissPlayTime = currentPlaybackTimeInSeconds()
         super.viewDidDisappear(animated)
         guard isExiting else { return }
-        if playMode == .feedFlow {
-            if let dismissPlayInfo {
+        if let dismissPlayInfo {
+            onDismissPlayback?(dismissPlayInfo, dismissPlayTime)
+            if playMode == .feedFlow {
                 onDismissWithPlayInfo?(dismissPlayInfo)
             }
         }

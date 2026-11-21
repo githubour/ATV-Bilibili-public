@@ -14,8 +14,7 @@
 		49508E112943420100D26812 /* CocoaLumberjackSwift in Frameworks */ = {isa = PBXBuildFile; productRef = 49508E102943420100D26812 /* CocoaLumberjackSwift */; };
 		499C75EC293058C9003160FB /* CocoaAsyncSocket in Frameworks */ = {isa = PBXBuildFile; productRef = 499C75EB293058C9003160FB /* CocoaAsyncSocket */; };
 		499C76132931A781003160FB /* Swifter in Frameworks */ = {isa = PBXBuildFile; productRef = 499C76122931A781003160FB /* Swifter */; };
-		695081FB2D0FD9E30063044D /* PocketSVG in Embed Frameworks */ = {isa = PBXBuildFile; productRef = 49078E46291BEA2400F556BD /* PocketSVG */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
-		AB1000000000000000000001 /* TopShelf.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = AB1000000000000000000003 /* TopShelf.appex */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
+			AB1000000000000000000001 /* TopShelf.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = AB1000000000000000000003 /* TopShelf.appex */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
 		F9171D5F2900FCFB002868C7 /* SnapKit in Frameworks */ = {isa = PBXBuildFile; productRef = F9171D5E2900FCFB002868C7 /* SnapKit */; };
 		F927ED65260F917D00EAB8E3 /* Gzip in Frameworks */ = {isa = PBXBuildFile; productRef = F927ED64260F917D00EAB8E3 /* Gzip */; };
 		F927ED9F2610B5C300EAB8E3 /* Kingfisher in Frameworks */ = {isa = PBXBuildFile; productRef = F927ED9E2610B5C300EAB8E3 /* Kingfisher */; };
@@ -46,7 +45,6 @@
 			dstPath = "";
 			dstSubfolderSpec = 10;
 			files = (
-				695081FB2D0FD9E30063044D /* PocketSVG in Embed Frameworks */,
 			);
 			name = "Embed Frameworks";
 			runOnlyForDeploymentPostprocessing = 0;
@@ -710,7 +708,7 @@
 			repositoryURL = "https://github.com/pocketsvg/PocketSVG.git";
 			requirement = {
 				kind = upToNextMajorVersion;
-				minimumVersion = 2.8.0;
+				minimumVersion = 3.2.0;
 			};
 		};
 		494741C129016CCE005D6885 /* XCRemoteSwiftPackageReference "MarqueeLabel" */ = {
@@ -741,8 +739,8 @@
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/yichengchen/swifter.git";
 			requirement = {
-				branch = stable;
-				kind = branch;
+				kind = revision;
+				revision = 4850fa96759cbfb81f4178bf7ba9d58afe55d7fd;
 			};
 		};
 		F9171D5D2900FCFB002868C7 /* XCRemoteSwiftPackageReference "SnapKit" */ = {

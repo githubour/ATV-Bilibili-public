@@ -101,7 +101,8 @@ class BLSettingLineCollectionViewCell: BLMotionCollectionViewCell {
     @available(tvOS 26.0, *)
     private func ensureGlassView() -> UIVisualEffectView {
         if let glassView = glassView { return glassView }
-        let view = BLCapsuleEffectView(effect: UIGlassEffect(style: .regular))
+        // 与全站胶囊统一：.clear 档只做折射/高光（.regular 自带磨砂底，聚焦胶囊会糊成一块灰）
+        let view = BLCapsuleEffectView(effect: BLGlass.effect(.clear, interactive: true))
         view.clipsToBounds = true
         view.isUserInteractionEnabled = false
         contentView.addSubview(view)

@@ -27,7 +27,10 @@ enum PlayerMediaFactory {
                         preferredHost: String? = nil,
                         transportMode: MediaTransportMode = .direct) async throws -> PreparedPlayerMedia
     {
-        let playURL = URL(string: BilibiliVideoResourceLoaderDelegate.URLs.play)!
+        // 自定义 scheme 的播放 URL 理论上恒可构造；万一常量被改坏，抛错而不是崩溃（审核行动项 #8）
+        guard let playURL = URL(string: BilibiliVideoResourceLoaderDelegate.URLs.play) else {
+            throw PlaybackError.invalidPlayURL(BilibiliVideoResourceLoaderDelegate.URLs.play)
+        }
         let headers: [String: String] = [
             "User-Agent": Keys.userAgent,
             "Referer": Keys.referer(for: aid),

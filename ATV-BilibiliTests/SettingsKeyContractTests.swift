@@ -15,7 +15,7 @@ final class SettingsKeyContractTests: XCTestCase {
         "Settings.mediaQuality", "Settings.mediaPlayerSpeed", "Settings.danmuArea",
         "Settings.danmuSize", "Settings.danmuAILevel", "Settings.danmuDuration",
         "Settings.losslessAudio", "Settings.preferAvc", "Settings.danmuMask",
-        "Settings.subtitlePreferLan", "Settings.subtitleAutoSelect", "Settings.vnMask", "Settings.contentMatch",
+        "Settings.subtitlePreferLan", "Settings.subtitleAutoSelect", "Settings.contentMatch",
         "Settings.contentMatchOnlyInHDR", "Settings.continuePlay",
         "DLNA.uuid", "DLNA.enable",
         "Settings.continouslyPlay", // rawValue 里的历史拼写错误必须永久保留

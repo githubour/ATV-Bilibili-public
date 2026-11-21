@@ -86,6 +86,14 @@ iOSInjectionProject/
 # Qoder IDE 数据
 .qoder/
 
-# 本机专用内容（含 UDID / Team ID 等），永不提交
+# 本机私有配置（设备 UDID / Team ID / 内网地址 / 绝对路径），永不入库
+# 模板见 local.env.example
+local.env
+
+# 本机专用内容（含 UDID / Team ID / 内网地址等），永不提交
 本机-*
+local.env
 .zcodeignore
+
+# Agent 协作说明（仅本机），不进公共仓
+AGENTS.md

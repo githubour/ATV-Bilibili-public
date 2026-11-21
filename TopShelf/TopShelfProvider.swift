@@ -40,7 +40,7 @@ class TopShelfProvider: TVTopShelfContentProvider {
               let data = defaults.data(forKey: "topShelfItems")
         else {
             os_log("[topshelf] 读取共享区失败/无数据", type: .error)
-            completionHandler(nil)
+            completionHandler(emptyContent())
             return
         }
         let syncData: SyncData?
@@ -52,7 +52,7 @@ class TopShelfProvider: TVTopShelfContentProvider {
             syncData = nil
         }
         guard let syncData else {
-            completionHandler(nil)
+            completionHandler(emptyContent())
             return
         }
 
@@ -70,12 +70,18 @@ class TopShelfProvider: TVTopShelfContentProvider {
             }
 
         guard !collections.isEmpty else {
-            os_log("[topshelf] 两个分区都为空, 返回 nil", type: .error)
-            completionHandler(nil)
+            os_log("[topshelf] 两个分区都为空, 返回空内容", type: .error)
+            completionHandler(emptyContent())
             return
         }
         os_log("[topshelf] 返回 %d 个分区", type: .default, collections.count)
         completionHandler(TVTopShelfSectionedContent(sections: collections))
+    }
+
+    /// 无数据时返回空内容而不是 nil：nil 会让系统回退到 brandassets 里的静态 Top Shelf 图（蓝色壁纸），
+    /// 首次安装/海报未同步时就会闪一下那张图。空内容只表现为“暂时没有内容”，不显示静态占位。
+    private func emptyContent() -> TVTopShelfContent {
+        TVTopShelfSectionedContent(sections: [])
     }
 
     private func makeItem(data: ItemData, sectionPrefix: String) -> TVTopShelfSectionedItem {

@@ -19,29 +19,25 @@ set -o pipefail
 #    ATV_ICON_NAME    覆盖图标资源名
 #
 #  怎么填（任选其一）
-#    a) 直接改本文件开头的 ATV_UDID
-#    b) 同目录建 `本机-配置.sh`（已被 .gitignore 忽略）写好这些变量
-#    c) 运行时传入：ATV_UDID=00008110-xxxx ATV_TEAM_ID=YYYYYYYYYY ./装机.command
+#    a) 复制模板填自己的值：cp local.env.example local.env（推荐，已 gitignore）
+#    b) 运行时传入：ATV_UDID=00008110-xxxx ATV_TEAM_ID=YYYYYYYYYY ./装机.command
+#       （命令行传入的同名变量优先于 local.env）
 #
 #  前提：Mac 与 Apple TV 在同一局域网；电视上 设置→隐私与安全性→开发者模式 已开启
 # ============================================
 cd "$(dirname "$0")" || exit 1
 
-[ -f ./本机-配置.sh ] && . ./本机-配置.sh
-ATV_UDID="${ATV_UDID:-}"
-
-if [ -z "$ATV_UDID" ]; then
+. ./atv-env.sh
+atv_env_load || exit 1
+atv_require ATV_UDID "Apple TV 的 UDID，查法: xcrun devicectl list devices" || {
   cat <<'EOF'
-✗ 还差一个必填项：Apple TV 的 UDID
 
-  查法:  xcrun devicectl list devices
   填法（任选）:
-    a) 直接改本文件开头的 ATV_UDID
-    b) 在同目录建 `本机-配置.sh`，写：ATV_UDID="00008110-xxxxxxxxxxxxxxxx"
-    c) 运行时传入：ATV_UDID=00008110-xxxxxxxxxxxxxxxx ./装机.command
+    a) cp local.env.example local.env，然后填 ATV_UDID（推荐）
+    b) 运行时传入：ATV_UDID=00008110-xxxxxxxxxxxxxxxx ./装机.command
 EOF
   exit 1
-fi
+}
 
 . ./装机-公共.sh
 atv_install || exit 1

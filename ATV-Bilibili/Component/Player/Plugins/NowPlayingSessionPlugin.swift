@@ -35,17 +35,13 @@ class NowPlayingSessionPlugin: NSObject, CommonPlayerPlugin {
         self.player = player
         installMediaHandlers()
         refreshSessionInfo()
-        refreshTask?.cancel()
-        refreshTask = Task { [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 3_000_000_000)
-                guard !Task.isCancelled else { break }
-                self?.refreshSessionInfo()
-            }
-        }
+        startRefreshLoop()
     }
 
     func playerDidPause(player: AVPlayer) {
+        // 暂停期间进度不变，停掉 3s 刷新循环（重新起播时重启），挂机不再每 3s 空写会话
+        refreshTask?.cancel()
+        refreshTask = nil
         refreshSessionInfo()
     }
 
@@ -151,6 +147,17 @@ class NowPlayingSessionPlugin: NSObject, CommonPlayerPlugin {
             self?.refreshSessionInfo()
         }
         return .success
+    }
+
+    private func startRefreshLoop() {
+        refreshTask?.cancel()
+        refreshTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                guard !Task.isCancelled else { break }
+                self?.refreshSessionInfo()
+            }
+        }
     }
 
     /// 每 3s 重写会话字典并重申跳过间隔: 前者兜住 seek/倍率/分P切换后的进度漂移,

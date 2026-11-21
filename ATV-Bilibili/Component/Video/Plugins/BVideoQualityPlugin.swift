@@ -186,7 +186,8 @@ class BVideoQualityPlugin: NSObject, CommonPlayerPlugin {
 
         // 为每个画质创建子菜单
         let qualitySubmenus = sortedQualityIds.map { qualityId -> UIMenu in
-            let streams = groupedQualities[qualityId]!
+            // 分组键来自同一字典，正常必有值；空数组兜底防强解包崩溃（审核行动项 #8）
+            let streams = groupedQualities[qualityId] ?? []
 
             // 获取画质的基础名称（去掉编码和码率信息）
             let baseName: String

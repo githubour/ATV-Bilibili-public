@@ -11,6 +11,11 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options connectionOptions: UIScene.ConnectionOptions) {
         guard let windowScene = scene as? UIWindowScene else { return }
         let window = UIWindow(windowScene: windowScene)
+        // 暗色影院风：固定深色外观，避免系统浅色把评论卡等语义色翻成白底
+        window.overrideUserInterfaceStyle = .dark
+        // 页面本身大多不铺底色（靠语义色/材质），日间模式下会透出系统浅色底，
+        // 白字压白底（用户 2026-11-01 反馈推荐卡片与左侧栏）。窗口兜一层固定深色。
+        window.backgroundColor = UIColor(white: 0.06, alpha: 1)
         self.window = window
 
         if ApiRequest.isLogin() {
@@ -39,7 +44,9 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     }
 
     /// 处理 Top Shelf 点击回跳:
-    /// bilibilitv://video?aid=xxx 进详情页; bilibilitv://play?aid=xxx 直接起播
+    /// bilibilitv://video?aid=xxx 进详情页; bilibilitv://play?aid=xxx 直接起播。
+    /// 深链只带 aid，cid 未知：直进由详情页解析出真实分 P/断点后再起播
+    /// （番剧/课程解析后留在详情页选集），不会拿 pagelist 的第 1P 硬播。
     private func handleOpenURLContexts(_ contexts: Set<UIOpenURLContext>) {
         guard let url = contexts.first?.url,
               url.scheme == "bilibilitv",

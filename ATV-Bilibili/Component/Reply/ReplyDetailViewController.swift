@@ -3,23 +3,26 @@
 //
 
 import Alamofire
-import Kingfisher
+import SnapKit
 import UIKit
 
 class ReplyDetailViewController: UIViewController {
-    private var scrollView: UIScrollView!
     private var contentView: UIView!
     private var titleLabel: UILabel!
-    private var replyLabel: UIButton!
-    private var replyCollectionView: UICollectionView!
-    private var imageStackView: UIStackView!
-    private var buttonStackView: UIStackView!
+    private var collectionView: UICollectionView!
 
     private let reply: Replys.Reply
+    /// jump_url 的 bvid 解析放在 VC 层（cell 不碰异步、不串复用），解析完局部刷新 section 0
+    private var jumpItems: [MainReplyCell.JumpItem] = []
+
+    private var hasReplies: Bool { !(reply.replies?.isEmpty ?? true) }
 
     init(reply: Replys.Reply) {
         self.reply = reply
         super.init(nibName: nil, bundle: nil)
+        // 全屏不透明呈现：默认 .automatic 在 tvOS 上会保留底层页面，
+        // 展开动画期间新页面透明、与视频详情页重叠，观感很乱
+        modalPresentationStyle = .fullScreen
     }
 
     @available(*, unavailable)
@@ -29,36 +32,11 @@ class ReplyDetailViewController: UIViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-
+        // 视图层级（contentView / collectionView）都是 clear，根视图必须给不透明底色，
+        // 否则 present 转场期间会透出底下的视频详情页
+        view.backgroundColor = .black
         setUpViews()
-        replyLabel.setTitle(reply.content.message, for: .normal)
-        replyLabel.setTitleColor(UIColor.label, for: .normal)
-        if let attr = reply.createAttributedString(displayView: replyLabel) {
-            replyLabel.setAttributedTitle(attr, for: .normal)
-        }
-
-        reply.content.pictures?.compactMap { URL(string: $0.img_src) }.forEach { url in
-            let imageView = UIImageView()
-            // 评论图长宽比不定, 显示上限 500pt 高, 按 1000x500 的框降采样(等比缩进框内)
-            imageView.kf.setImage(with: url, options: .cover(width: 1000, height: 500))
-            imageView.contentMode = .scaleAspectFit
-            imageView.snp.makeConstraints { make in
-                make.height.lessThanOrEqualTo(500)
-            }
-            imageStackView.addArrangedSubview(imageView)
-        }
-
-        reply.content.jump_url?.forEach { url, jump in
-            Task { [weak self] in
-                guard let bvId = await ReplyUrlBVParser.parser(url: url) else { return }
-                let button = BLCustomTextButton()
-                button.title = jump.title
-                button.onPrimaryAction = { _ in
-                    self?.jumpLink(bvid: bvId)
-                }
-                self?.buttonStackView.addArrangedSubview(button)
-            }
-        }
+        resolveJumpItems()
     }
 
     // MARK: - Private
@@ -69,22 +47,35 @@ class ReplyDetailViewController: UIViewController {
         detailVC.present(from: self)
     }
 
-    private func setUpViews() {
-        scrollView = {
-            let scroll = UIScrollView()
-            view.addSubview(scroll)
-            scroll.snp.makeConstraints { make in
-                make.edges.equalToSuperview()
-            }
-            return scroll
-        }()
+    private func openImages(_ urlStrings: [String]) {
+        guard !urlStrings.isEmpty else { return }
+        present(ReplyImageViewerController(imageURLStrings: urlStrings), animated: true)
+    }
 
+    private func resolveJumpItems() {
+        let entries = reply.content.jump_url ?? [:]
+        guard !entries.isEmpty else { return }
+        Task { [weak self] in
+            var items: [MainReplyCell.JumpItem] = []
+            for (url, jump) in entries {
+                guard let bvid = await ReplyUrlBVParser.parser(url: url) else { continue }
+                items.append(.init(title: jump.title, bvid: bvid))
+            }
+            guard let self, !items.isEmpty else { return }
+            self.jumpItems = items
+            // 只重建主评论那一行，让新增的操作行参与自适应高度；关掉动画避免闪一下
+            UIView.performWithoutAnimation {
+                self.collectionView.reloadItems(at: [IndexPath(item: 0, section: 0)])
+            }
+        }
+    }
+
+    private func setUpViews() {
         contentView = {
             let view = UIView()
-            scrollView.addSubview(view)
+            self.view.addSubview(view)
             view.snp.makeConstraints { make in
-                make.edges.equalToSuperview()
-                make.width.equalToSuperview()
+                make.edges.equalTo(self.view.safeAreaLayoutGuide)
             }
             return view
         }()
@@ -94,111 +85,101 @@ class ReplyDetailViewController: UIViewController {
             contentView.addSubview(label)
             label.font = .boldSystemFont(ofSize: 60)
             label.text = "评论"
-
             label.snp.makeConstraints { make in
                 make.centerX.equalToSuperview()
                 make.top.equalToSuperview().offset(20)
             }
-
             return label
         }()
 
-        replyLabel = {
-            let label = UIButton()
-            contentView.addSubview(label)
-            label.titleLabel?.numberOfLines = 0
-            label.titleLabel?.textAlignment = .left
-            label.titleLabel?.font = .preferredFont(forTextStyle: .headline)
-            label.contentHorizontalAlignment = .left
-            label.setContentCompressionResistancePriority(.required, for: .vertical)
-            label.snp.makeConstraints { make in
-                make.top.equalTo(self.titleLabel.snp.bottom).offset(60)
-                make.leading.equalTo(contentView.snp.leadingMargin)
-                make.trailing.equalTo(contentView.snp.trailingMargin)
+        collectionView = {
+            // 整页只有一个滚动容器：主评论作 section 0 首项、子评论 section 1 全宽单列
+            let cv = UICollectionView(frame: .zero, collectionViewLayout: makeLayout())
+            contentView.addSubview(cv)
+            cv.dataSource = self
+            cv.delegate = self
+            cv.backgroundColor = .clear
+            cv.register(MainReplyCell.self)
+            cv.register(ReplyCell.self)
+            cv.snp.makeConstraints { make in
+                make.top.equalTo(self.titleLabel.snp.bottom).offset(20)
+                make.leading.trailing.bottom.equalToSuperview()
             }
-            label.titleLabel?.snp.makeConstraints { make in
-                make.top.bottom.equalToSuperview()
-            }
-
-            return label
+            return cv
         }()
+    }
 
-        imageStackView = {
-            let stackView = UIStackView()
-            stackView.axis = .horizontal
-            stackView.distribution = .fillEqually
-            stackView.spacing = 10
-            contentView.addSubview(stackView)
-
-            stackView.snp.makeConstraints { make in
-                make.top.equalTo(self.replyLabel.snp.bottom).offset(60)
-                make.leading.equalTo(contentView.snp.leadingMargin)
-                make.trailing.equalTo(contentView.snp.trailingMargin)
-            }
-            return stackView
-        }()
-
-        buttonStackView = {
-            let stackView = UIStackView()
-            stackView.axis = .horizontal
-            stackView.alignment = .leading
-            stackView.spacing = 10
-            stackView.distribution = .equalSpacing
-            contentView.addSubview(stackView)
-            stackView.snp.makeConstraints { make in
-                make.top.equalTo(self.imageStackView.snp.bottom).offset(60)
-                make.leading.equalTo(contentView.snp.leadingMargin)
-                make.trailing.lessThanOrEqualTo(contentView.snp.trailingMargin)
-            }
-            return stackView
-        }()
-
-        replyCollectionView = {
-            let flowLayout = UICollectionViewFlowLayout()
-            flowLayout.itemSize = CGSize(width: 582, height: 360)
-            flowLayout.sectionInset = .init(top: 0, left: 60, bottom: 0, right: 60)
-            flowLayout.minimumLineSpacing = 10
-            flowLayout.minimumInteritemSpacing = 10
-
-            let collectionView = UICollectionView(frame: .zero, collectionViewLayout: flowLayout)
-            contentView.addSubview(collectionView)
-            collectionView.dataSource = self
-            collectionView.delegate = self
-            collectionView.register(UINib(nibName: ReplyCell.identifier, bundle: nil), forCellWithReuseIdentifier: ReplyCell.identifier)
-
-            collectionView.snp.makeConstraints { make in
-                make.leading.trailing.equalToSuperview()
-                make.top.equalTo(self.buttonStackView.snp.bottom).offset(60)
-                // 水平方向已由 leading/trailing 决定；再固定 width 会与它们冲突
-                make.height.equalTo(360)
-                make.bottom.equalToSuperview()
-            }
-
-            return collectionView
-        }()
+    private func makeLayout() -> UICollectionViewLayout {
+        let layout = UICollectionViewCompositionalLayout { sectionIndex, _ in
+            let size = NSCollectionLayoutSize(
+                widthDimension: .fractionalWidth(1.0),
+                heightDimension: .estimated(sectionIndex == 0 ? 300 : 140)
+            )
+            let item = NSCollectionLayoutItem(layoutSize: size)
+            let group = NSCollectionLayoutGroup.vertical(layoutSize: size, subitems: [item])
+            let section = NSCollectionLayoutSection(group: group)
+            section.contentInsets = .init(top: 0, leading: 60, bottom: 0, trailing: 60)
+            section.interGroupSpacing = 10
+            return section
+        }
+        let configuration = UICollectionViewCompositionalLayoutConfiguration()
+        configuration.interSectionSpacing = 20
+        layout.configuration = configuration
+        return layout
     }
 }
 
 extension ReplyDetailViewController: UICollectionViewDataSource, UICollectionViewDelegate {
+    func numberOfSections(in collectionView: UICollectionView) -> Int {
+        hasReplies ? 2 : 1
+    }
+
     func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int {
-        return reply.replies?.count ?? 0
+        section == 0 ? 1 : (reply.replies?.count ?? 0)
     }
 
     func collectionView(_ collectionView: UICollectionView, cellForItemAt indexPath: IndexPath) -> UICollectionViewCell {
-        guard let cell = collectionView.dequeueReusableCell(withReuseIdentifier: ReplyCell.identifier, for: indexPath) as? ReplyCell else {
-            return UICollectionViewCell()
-        }
-        guard let reply = reply.replies?[indexPath.row] else {
+        if indexPath.section == 0 {
+            let cell = collectionView.dequeue(MainReplyCell.self, for: indexPath)
+            cell.onJump = { [weak self] bvid in self?.jumpLink(bvid: bvid) }
+            cell.onOpenImages = { [weak self] urls in self?.openImages(urls) }
+            cell.onImageAspectsResolved = { [weak self] in
+                guard let self else { return }
+                // 图片真实比例确定后重算一次高度；图片约束已在 cell 内 remake，这里不会重新 config、不会循环
+                UIView.performWithoutAnimation {
+                    self.collectionView.collectionViewLayout.invalidateLayout()
+                    self.collectionView.layoutIfNeeded()
+                }
+            }
+            cell.config(reply: reply, jumpItems: jumpItems)
             return cell
         }
-        cell.config(replay: reply)
+
+        let cell = collectionView.dequeue(ReplyCell.self, for: indexPath)
+        cell.selfSizingContent = true
+        if let sub = reply.replies?[indexPath.item] {
+            cell.config(replay: sub)
+        }
         return cell
     }
 
     func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
-        guard let reply = reply.replies?[indexPath.item] else { return }
-        let detail = ReplyDetailViewController(reply: reply)
+        if indexPath.section == 0 {
+            // 兜底入口：焦点若落在主评论卡本身（而非内部按钮），按确认键也能打开大图
+            let urls = (reply.content.pictures ?? []).compactMap { URL(string: $0.img_src)?.absoluteString }
+            if !urls.isEmpty { openImages(urls) }
+            return
+        }
+        guard let sub = reply.replies?[indexPath.item] else { return }
+        let detail = ReplyDetailViewController(reply: sub)
         present(detail, animated: true)
+    }
+
+    func collectionView(_ collectionView: UICollectionView, didUpdateFocusIn context: UICollectionViewFocusUpdateContext, with coordinator: UIFocusAnimationCoordinator) {
+        // 主评论带长图时 cell 远超一屏，焦点从子评论回到它时系统只让局部可见；
+        // 显式滚回顶部，保证楼主头像/用户名始终能看到
+        guard let next = context.nextFocusedIndexPath, next.section == 0 else { return }
+        collectionView.setContentOffset(.zero, animated: true)
     }
 }
 

@@ -23,7 +23,6 @@ enum SettingsKey: String, CaseIterable {
     case danmakuMask = "Settings.danmuMask"
     case subtitlePreferLan = "Settings.subtitlePreferLan"
     case subtitleAutoSelect = "Settings.subtitleAutoSelect"
-    case vnMask = "Settings.vnMask"
     case contentMatch = "Settings.contentMatch"
     case contentMatchOnlyInHDR = "Settings.contentMatchOnlyInHDR"
     case continuePlay = "Settings.continuePlay"

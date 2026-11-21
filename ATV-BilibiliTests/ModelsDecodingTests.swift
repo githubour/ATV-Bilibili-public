@@ -111,7 +111,8 @@ final class ModelsDecodingTests: XCTestCase {
 
     func test_replys_decodes() throws {
         let json = """
-        {"replies":[{"member":{"uname":"user","avatar":"https://i0.hdslb.com/a.jpg"},
+        {"page":{"count":42,"num":1,"size":20},
+         "replies":[{"rpid":123,"member":{"uname":"user","avatar":"https://i0.hdslb.com/a.jpg"},
                      "content":{"message":"你好",
                                 "pictures":[{"img_src":"https://i0.hdslb.com/p.jpg"}],
                                 "emote":{},"jump_url":{}},
@@ -119,9 +120,119 @@ final class ModelsDecodingTests: XCTestCase {
         """
         let replys = try decoder.decode(Replys.self, from: Data(json.utf8))
         XCTAssertEqual(replys.replies?.count, 1)
+        XCTAssertEqual(replys.replies?[0].rpid, 123)
         XCTAssertEqual(replys.replies?[0].member.uname, "user")
         XCTAssertEqual(replys.replies?[0].content.message, "你好")
         XCTAssertEqual(replys.replies?[0].content.pictures?.count, 1)
+        XCTAssertEqual(replys.page?.count, 42)
+        XCTAssertEqual(replys.page?.size, 20)
+    }
+
+    func test_replys_pictureOptionalDimensionsDecode() throws {
+        // Picture 的宽高是可选字段：接口给了就解码，没给保持 nil（不破旧 fixture）
+        let withDims = """
+        {"replies":[{"member":{"uname":"u","avatar":""},
+                     "content":{"message":"m",
+                                "pictures":[{"img_src":"https://i0.hdslb.com/p.jpg","img_width":750,"img_height":3000}]}}]}
+        """
+        let a = try decoder.decode(Replys.self, from: Data(withDims.utf8))
+        let picA = try XCTUnwrap(a.replies?[0].content.pictures?.first)
+        XCTAssertEqual(picA.img_width, 750)
+        XCTAssertEqual(picA.img_height, 3000)
+
+        let withoutDims = """
+        {"replies":[{"member":{"uname":"u","avatar":""},
+                     "content":{"message":"m",
+                                "pictures":[{"img_src":"https://i0.hdslb.com/p.jpg"}]}}]}
+        """
+        let b = try decoder.decode(Replys.self, from: Data(withoutDims.utf8))
+        let picB = try XCTUnwrap(b.replies?[0].content.pictures?.first)
+        XCTAssertNil(picB.img_width)
+        XCTAssertNil(picB.img_height)
+    }
+
+    func test_replys_mergeHotAndLatestDeduplicatesByRpid() throws {
+        let json = """
+        {"replies":[
+          {"rpid":1,"member":{"uname":"a","avatar":""},"content":{"message":"同一条"},"like":9,"ctime":100},
+          {"rpid":2,"member":{"uname":"b","avatar":""},"content":{"message":"热门"},"like":8,"ctime":101}
+        ]}
+        """
+        let hot = try decoder.decode(Replys.self, from: Data(json.utf8))
+        let latest = try decoder.decode(Replys.self, from: Data(json.utf8))
+        let merged = Replys.merged(hot: hot.replies ?? [], latest: latest.replies ?? [])
+        XCTAssertEqual(merged.map(\.rpid), [1, 2], "热门与最新重叠时按 rpid 去重，热门在前")
+    }
+
+    // MARK: - 历史记录 / 续看横幅
+
+    /// 多 P 稿件：接口的 cid 固定是第 1P，续播必须用 page.cid；
+    /// 剩余分钟按「这一 P 的时长」算（接口单位是秒，不是毫秒）
+    func test_historyData_multipartResumeUsesLastWatchedPage() throws {
+        let json = """
+        {"aid":170001,"cid":111,"title":"多P稿件","progress":533,"duration":3600,
+         "view_at":1700000000,"business":"archive","type":3,
+         "pic":"https://i0.hdslb.com/p.jpg",
+         "owner":{"mid":7,"name":"UP主","face":null},
+         "page":{"cid":222,"duration":1402},
+         "stat":{"view":1,"danmaku":2}}
+        """
+        let item = try decoder.decode(HistoryData.self, from: Data(json.utf8))
+        XCTAssertEqual(item.cid, 111)
+        XCTAssertEqual(item.resumeCid, 222)
+        XCTAssertEqual(item.resumeDuration, 1402)
+        XCTAssertEqual(item.remainingMinutes, 15) // (1402-533)=869 秒
+        XCTAssertTrue(item.isResumeCandidate)
+        XCTAssertFalse(item.isPgcContent)
+    }
+
+    /// 番剧条目：必须识别成 PGC 并带出 epid / seasonId，否则会被当成普通稿件直进播放器
+    func test_historyData_pgcCarriesEpidAndSeason() throws {
+        let json = """
+        {"aid":96523832,"cid":164789275,"title":"异度侵入 12","progress":277,"duration":1481,
+         "view_at":1588831600,"business":"pgc","type":4,
+         "pic":"https://i0.hdslb.com/p.jpg",
+         "owner":{"mid":928123,"name":"哔哩哔哩番剧","face":null},
+         "bangumi":{"ep_id":307457,"season":{"season_id":29310}}}
+        """
+        let item = try decoder.decode(HistoryData.self, from: Data(json.utf8))
+        XCTAssertTrue(item.isPgcContent)
+        XCTAssertEqual(item.epid, 307457)
+        XCTAssertEqual(item.seasonId, 29310)
+        XCTAssertEqual(item.resumeCid, item.cid) // 剧集没有 page 对象
+        XCTAssertEqual(item.remainingMinutes, 21) // (1481-277)=1204 秒
+    }
+
+    /// 看完的稿件与直播不参与续看推荐
+    func test_historyData_finishedOrNonVideoIsNotResumeCandidate() throws {
+        let finished = """
+        {"aid":1,"cid":2,"title":"看完","progress":300,"duration":300,
+         "view_at":1,"business":"archive","pic":null,
+         "owner":{"mid":1,"name":"u","face":null}}
+        """
+        XCTAssertFalse(try decoder.decode(HistoryData.self, from: Data(finished.utf8)).isResumeCandidate)
+
+        let live = """
+        {"aid":1,"cid":0,"title":"直播","progress":120,"duration":0,
+         "view_at":1,"business":"live","pic":null,
+         "owner":{"mid":1,"name":"u","face":null}}
+        """
+        XCTAssertFalse(try decoder.decode(HistoryData.self, from: Data(live.utf8)).isResumeCandidate)
+    }
+
+    /// 老响应没有 business/page 时按稿件兜底，不能让解码或续看判断失败
+    func test_historyData_legacyPayloadDefaults() throws {
+        let json = """
+        {"aid":1,"cid":2,"title":"老响应","progress":60,"duration":600,
+         "view_at":1,"pic":null,"owner":{"mid":1,"name":"u","face":null}}
+        """
+        let item = try decoder.decode(HistoryData.self, from: Data(json.utf8))
+        XCTAssertEqual(item.resumeCid, 2)
+        XCTAssertEqual(item.resumeDuration, 600)
+        XCTAssertEqual(item.remainingMinutes, 9)
+        XCTAssertTrue(item.isPlayableBusiness)
+        XCTAssertFalse(item.isPgcContent)
+        XCTAssertTrue(item.isResumeCandidate)
     }
 
     func test_upSpaceSeasons_decodes() throws {

@@ -21,6 +21,10 @@ class UpSpaceViewController: UIViewController, BLTabBarContentVCProtocol {
 
     private let headerView = UpSpaceProfileHeaderView()
     private let segmentedControl = UISegmentedControl(items: ["投稿", "合集"])
+    /// 「投稿 | 合集」只占左侧 360pt，右侧列卡片上滑时与它无水平投影重叠，焦点引擎会
+    /// 越过它直奔资料头右上角三个按钮；用 guide 把分段控件这一整行补齐并回指它
+    /// （同 SegmentViewController 的 rightFocusGuide 先例）。
+    private let segmentTrailingFocusGuide = UIFocusGuide()
     private let contentView = UIView()
     private let blockedMessageLabel = UILabel()
     private let loadingView = UIActivityIndicatorView(style: .large)
@@ -83,6 +87,14 @@ class UpSpaceViewController: UIViewController, BLTabBarContentVCProtocol {
             make.width.equalTo(360)
             make.height.equalTo(60)
         }
+
+        view.addLayoutGuide(segmentTrailingFocusGuide)
+        segmentTrailingFocusGuide.snp.makeConstraints { make in
+            make.top.bottom.equalTo(segmentedControl)
+            make.leading.equalTo(segmentedControl.snp.trailing)
+            make.trailing.equalToSuperview()
+        }
+        segmentTrailingFocusGuide.preferredFocusEnvironments = [segmentedControl]
 
         view.addSubview(contentView)
         contentView.snp.makeConstraints { make in
@@ -180,6 +192,7 @@ class UpSpaceViewController: UIViewController, BLTabBarContentVCProtocol {
         blockedMessageLabel.isHidden = !isBlocked
         contentView.isHidden = isBlocked
         segmentedControl.isHidden = isBlocked
+        segmentTrailingFocusGuide.isEnabled = !isBlocked
         if isBlocked {
             loadingView.stopAnimating()
         }

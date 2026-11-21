@@ -1,0 +1,139 @@
+# ============================================
+#  本机-公共版-ci.yml —— 公共仓的 CI 模板
+#
+#  本文件以 本机- 开头, 不会随导出进入公共仓; 导出脚本在步骤 3c
+#  把它**拷贝覆盖**成公共仓的 .github/workflows/ci.yml。
+#  与私有仓 ci.yml 的差异:
+#    - build 跑 GitHub 托管 macOS runner(公开仓免费), 没有 self-hosted 门禁
+#      (公共仓没注册 runner, self-hosted job 会永久排队)
+#    - secret 扫描用 pii profile(公开仓口径: 内网地址/本机路径/个人标识)
+#    - 不触发 pull_request —— 公共仓不接受 PR, 不为路人 PR 烧 25 分钟 macOS
+#    - 剥掉本机路径/其它项目名等私有上下文注释
+#  私有仓改 CI 时记得同步这里, 两份在导出脚本里以模板为准。
+# ============================================
+name: CI
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    tags: ['v*']
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: Build & test (tvOS)
+    # 公开仓库用 GitHub 托管 macOS runner, 不占分钟额度
+    runs-on: macos-26
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Show toolchain
+        run: xcodebuild -version
+
+      - name: Cache SwiftPM
+        uses: actions/cache@v4
+        continue-on-error: true
+        with:
+          path: |
+            ~/Library/Caches/org.swift.swiftpm
+            .build/DerivedData/SourcePackages
+          key: spm-tvos-${{ hashFiles('ATV-Bilibili.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+          restore-keys: |
+            spm-tvos-
+
+      - name: Select tvOS simulator
+        id: sim
+        run: |
+          set -euo pipefail
+          pick_simulator() {
+            SIM_JSON="$(xcrun simctl list devices available --json)"
+            SIM_JSON="$SIM_JSON" python3 - <<'PY'
+          import json, os
+          devices = json.loads(os.environ["SIM_JSON"])["devices"]
+          for runtime, items in devices.items():
+              if "tvOS" in runtime and items:
+                  print(items[0]["udid"])
+                  break
+          PY
+          }
+          UDID="$(pick_simulator)"
+          if [ -z "$UDID" ]; then
+            echo "未找到 tvOS 模拟器运行时，尝试下载..."
+            xcodebuild -downloadPlatform tvOS
+            UDID="$(pick_simulator)"
+          fi
+          if [ -z "$UDID" ]; then
+            echo "::error::没有可用的 tvOS 模拟器"
+            exit 1
+          fi
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+          echo "使用模拟器: $UDID"
+
+      # 模拟器构建也要 ad-hoc 签名：未签名宿主访问 Keychain 会返回 -34018，
+      # KeychainStoreTests 会失败；这里不依赖开发者证书。
+      - name: Build for testing
+        run: |
+          # 输出落文件、只回显尾部：xcodebuild 的告警动辄上千行，直接打日志会撑爆
+          xcodebuild build-for-testing \
+            -project ATV-Bilibili.xcodeproj \
+            -scheme ATV-Bilibili \
+            -destination "platform=tvOS Simulator,id=${{ steps.sim.outputs.udid }}" \
+            -derivedDataPath .build/DerivedData \
+            CODE_SIGNING_ALLOWED=YES \
+            CODE_SIGN_IDENTITY=- \
+            CODE_SIGNING_REQUIRED=NO \
+            DEVELOPMENT_TEAM= > build.log 2>&1 || { tail -60 build.log; exit 1; }
+          tail -5 build.log
+
+      - name: Run unit tests
+        run: |
+          xcodebuild test-without-building \
+            -project ATV-Bilibili.xcodeproj \
+            -scheme ATV-Bilibili \
+            -destination "platform=tvOS Simulator,id=${{ steps.sim.outputs.udid }}" \
+            -derivedDataPath .build/DerivedData \
+            -resultBundlePath .build/TestResults.xcresult \
+            CODE_SIGNING_ALLOWED=YES \
+            CODE_SIGN_IDENTITY=- \
+            CODE_SIGNING_REQUIRED=NO \
+            DEVELOPMENT_TEAM= > test.log 2>&1 || { tail -60 test.log; exit 1; }
+          grep -E "Executed [0-9]+ test" test.log | tail -3
+
+      - name: Upload test results on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tvos-test-results
+          path: .build/TestResults.xcresult
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # 公开仓口径的扫描：在密钥规则之上追加内网地址 / 本机路径 / 个人标识
+  secret-scan:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Scan tracked files
+        env:
+          # 第三方 vendored 源码原样保留，只排除这一处
+          SCAN_EXCLUDE: Vendor
+          SCAN_PROFILE: pii
+        run: sh tools/secret-scan.sh

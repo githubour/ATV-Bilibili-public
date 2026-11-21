@@ -3,22 +3,53 @@
 #
 # 启用（每个工作副本各设一次；钩子文件本身不进 .git/hooks）：
 #   git config core.hooksPath BuildTools/hooks
-# 本机私有备份仓为低频同步，GitHub Actions 已 disable，
-# 回归保护就靠这道本地钩子（全量测试约 40s，可接受）。
+# CI 已于 2026-10-24 启用（自托管 runner，push/PR 门禁），
+# 本地钩子与之并存（全量测试约 40s，可接受）。
 set -e
 
-SIMULATOR_ID="${ATV_TEST_SIMULATOR_ID:-9E4DEDA0-C5D3-4267-90AD-AFB137ACFFAC}"
+# 测试设备固定为 local.env 的 ATV_TEST_SIMULATOR_ID（UDID），设备不存在或不可用
+# 就直接拒推：不再按 "Apple TV" 名字匹配、也不再优先挑 Booted。那种写法谁开着就用谁，
+# 测试会静默跑在同型号的另一台设备上（本机同时有 Apple TV 4K 与 Zen-Libass-Test）。
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo .)"
+cd "$ROOT"
+. ./atv-env.sh
+atv_env_load || exit 1
+if ! atv_require ATV_TEST_SIMULATOR_ID "tvOS 测试模拟器的 UDID"; then
+  echo "  修复: 在 $(atv_env_path) 里补一行 ATV_TEST_SIMULATOR_ID=\"<UDID>\"" >&2
+  echo "  UDID 查法: xcrun simctl list devices" >&2
+  exit 1
+fi
+SIMULATOR_ID="$ATV_TEST_SIMULATOR_ID"
 
-if ! xcrun simctl list devices available | grep -q "${SIMULATOR_ID}"; then
-  echo "[pre-push] 找不到模拟器 ${SIMULATOR_ID}（可用 ATV_TEST_SIMULATOR_ID 覆盖），拒绝推送"
+# 校验 UDID 真实存在且可用；失败即拒推，不挑别的设备顶上。
+if ! SIM_JSON=$(xcrun simctl list -j devices available 2>/dev/null); then
+  echo "[pre-push] xcrun simctl list -j devices available 执行失败，无法校验测试设备，拒绝推送" >&2
+  exit 1
+fi
+if ! SIM_NAME=$(printf '%s' "$SIM_JSON" | ATV_UDID="$SIMULATOR_ID" python3 -c '
+import json, os, sys
+want = os.environ["ATV_UDID"].strip().upper()
+for devices in json.load(sys.stdin)["devices"].values():
+    for dev in devices:
+        if dev["udid"].upper() == want:
+            print(dev["name"])
+            sys.exit(0)
+sys.exit(1)
+'); then
+  echo "[pre-push] 测试设备 UDID 不可用：$SIMULATOR_ID" >&2
+  echo "  它必须出现在 \`xcrun simctl list devices available\` 里（设备被删、或绑定的 runtime 缺失都会这样）" >&2
+  echo "  修复: 在 $(atv_env_path) 里把 ATV_TEST_SIMULATOR_ID 改成正确的 tvOS 模拟器 UDID" >&2
+  echo "  UDID 查法: xcrun simctl list devices" >&2
+  echo "  已拒绝推送：不会回退到别的设备（回退会让测试静默跑错地方）。" >&2
   exit 1
 fi
 
-echo "[pre-push] 运行 ATV-BilibiliTests（ZenPlayer tvOS 模拟器）..."
+echo "[pre-push] 运行 ATV-BilibiliTests（${SIM_NAME} / tvOS 模拟器 ${SIMULATOR_ID}）..."
 # 构建产物默认落在 ~/Library/Developer/Xcode/DerivedData，而本机把它软链到了外置卷。
-# Simulator 应用启动时 dyld 会按 rpath 访问该路径，macOS 隐私权限下可能卡在 open；
-# 因此测试固定用内置盘的独立 DerivedData，并复用已有 SPM 缓存避免重新联网解析。
-TEST_DD="${ATV_TEST_DERIVED_DATA:-$HOME/Library/Developer/Xcode/DerivedData-ATV-Bilibili}"
+# 单测宿主挂起的真实前提是内置盘余额不足 / 长时间 Time Machine 备份在跑（2026-11-11 A/B 已排除
+# 「外置卷导致卡在 open」的旧因果）；这里与默认 DerivedData 一致放到外置卷，
+# 并复用已有 SPM 缓存避免重新联网解析。
+TEST_DD="${ATV_TEST_DERIVED_DATA:-/Volumes/KIOXIA/cache/Xcode/DerivedData-ATV-Bilibili}"
 SPM_CACHE="${ATV_TEST_SPM_CACHE:-}"
 DD_ROOT="$HOME/Library/Developer/Xcode/DerivedData"
 if [ -L "$DD_ROOT" ]; then DD_ROOT=$(readlink "$DD_ROOT"); fi

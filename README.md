@@ -7,6 +7,7 @@
 > 与哔哩哔哩官方无任何关联，仅用于个人学习与研究。本项目以 **GPL-2.0** 分发，详见文末「协议」。
 >
 > 本仓库是**发布镜像**：日常开发在私有仓库进行，这里按版本同步；**不接受 PR**，欢迎提 Issue。
+> （私有仓的仓库约定见 AGENTS.md，不随导出。）
 
 ---
 
@@ -23,20 +24,38 @@
 
 ## 构建与安装
 
+### 本机私有配置（一次性）
+
+设备 UDID、Team ID、内网地址、本机绝对路径都不入库，统一放在仓库根的 `local.env`
+（已被 `.gitignore` 忽略，模板见 `local.env.example`）：
+
+```bash
+cp local.env.example local.env
+xcrun devicectl list devices          # 查 UDID 填进 ATV_UDID（设备名可能显示 ?? ，属正常）
+# ATV_TEAM_ID 在 Xcode → 设置 → Accounts 里；其余字段都有默认值，可选
+```
+
+仓库根的装机/续签/导出脚本（`装机.command`、`本机-装机-*.command`、`本机-自签续签.sh` 等，完整清单以 `ls *.command *.sh` 为准）开头统一加载 `atv-env.sh`：
+
+```bash
+. ./atv-env.sh
+atv_env_load || exit 1
+atv_require ATV_UDID "Apple TV 的 UDID" || exit 1
+```
+
+缺必填项会直接报错并提示怎么补；命令行传入的同名变量优先于 `local.env`，
+需要完全跳过配置文件时用 `ATV_ENV_FILE=/dev/null`。
+
 ### 一键脚本
 
 仓库根目录的 `装机.command`：双击或命令行执行，完成「Release 构建 + 直装真机」。
 
 ```bash
-xcrun devicectl list devices          # 查 Apple TV 的 UDID（设备名可能显示 ?? ，属正常）
-
-ATV_UDID=00008110-xxxxxxxxxxxxxxxx \
-ATV_TEAM_ID=YYYYYYYYYY \
-./装机.command
+./装机.command                                  # 读 local.env
+ATV_UDID=00008110-xxxxxxxxxxxxxxxx ./装机.command  # 临时覆盖
 ```
 
 可选变量：`ATV_BUNDLE_ID`、`ATV_DISPLAY_NAME`、`ATV_ICON_NAME`（覆盖工程默认值）。
-也可以在同目录建 `本机-配置.sh`（已被 `.gitignore` 忽略）写好这些变量，就不用每次传参。
 
 ### 手动构建
 
@@ -104,7 +123,7 @@ xcodebuild ... \
 - 长按菜单重排（一键三连、投币、稍后再看、我不想看）
 - 选集面板：控制栏浮现时左下角出现横向分集卡，当前集高亮并自动滚动到可见位置
 - **B 站官方 AI 视频总结**：摘要与章节大纲，点章节跳转
-- 定时关闭；播放器内查看详情与相关推荐
+- 播放器内查看详情与相关推荐
 - 侧栏胶囊化（Liquid Glass）与焦点动效收口
 
 ### 信息架构
@@ -122,7 +141,7 @@ xcodebuild ... \
 - 新增单元测试 target，覆盖选流规则、片头片尾换算、WBI 签名纯函数、LRU 原语、`SettingsKey` rawValue 冻结契约、模型解码
 - 性能：列表分页增量 apply、sidx 进程级共享缓存、弹幕主线程收敛、DLNA 降频与延迟启动
 - 重构：`WebRequest` 按域拆分、命名统一（`Response` / `Danmaku`）、单文件多类拆出
-- 移除：直播模块、TV 推荐功能、`SwiftyXMLParser` 死依赖、CI / fastlane 遗留
+- 移除：直播模块、TV 推荐功能、`SwiftyXMLParser` 死依赖、CI / fastlane 遗留（CI 后于 2026-10-24 以自托管 runner 重建）
 
 ### 与上游共享的部分
 

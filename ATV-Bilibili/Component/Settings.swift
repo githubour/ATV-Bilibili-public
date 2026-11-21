@@ -100,9 +100,6 @@ enum Settings {
     @UserDefault(.subtitleAutoSelect, defaultValue: false)
     static var subtitleAutoSelect: Bool
 
-    @UserDefault(.vnMask, defaultValue: false)
-    static var vnMask: Bool
-
     @UserDefault(.contentMatch, defaultValue: true)
     static var contentMatch: Bool
 

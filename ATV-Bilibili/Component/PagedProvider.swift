@@ -24,6 +24,8 @@ final class PagedProvider<T> {
     private(set) var finished = false
     private var page = 1
     private var requesting = false
+    /// 区分「当前在途请求」与「已被 refresh 取消的旧请求」：旧请求退出时不能清掉新请求的标记。
+    private var requestGeneration = 0
     private var task: Task<Void, Never>?
 
     /// items 变化(刷新/追加成功)后回调; 刷新失败不回调, 使用方保留旧数据
@@ -63,7 +65,12 @@ final class PagedProvider<T> {
 
     /// 以下两个供测试直接 await; UI 侧走 refresh()/loadMoreIfNeeded()
     func performRefresh() async {
+        requestGeneration += 1
+        let generation = requestGeneration
         requesting = true
+        defer {
+            if requestGeneration == generation { requesting = false }
+        }
         do {
             let first = try await fetch(1)
             guard !Task.isCancelled else { return }
@@ -74,12 +81,16 @@ final class PagedProvider<T> {
         } catch {
             // 刷新失败保留旧列表; 首次加载失败维持空态
         }
-        requesting = false
     }
 
     func performLoadMore() async {
         guard !requesting, !finished, !items.isEmpty else { return }
+        requestGeneration += 1
+        let generation = requestGeneration
         requesting = true
+        defer {
+            if requestGeneration == generation { requesting = false }
+        }
         let pageToFetch = page + 1
         do {
             let next = try await fetch(pageToFetch)
@@ -91,7 +102,6 @@ final class PagedProvider<T> {
         } catch {
             // 拉取失败不停摆: 页码未推进, 下次滚动到底自动重试
         }
-        requesting = false
     }
 
     private func appendDeduped(_ next: [T]) {

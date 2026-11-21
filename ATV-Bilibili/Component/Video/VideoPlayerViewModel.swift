@@ -34,6 +34,8 @@ enum PlaybackError: LocalizedError {
     case upowerExclusive(underlying: String)
     /// PlayInfo 解析出的 cid 缺失（如番剧 episodes 为空），此前会以 cid=0 继续请求
     case missingCid
+    /// 预热阶段构造自定义 scheme 播放 URL 失败（常量被改坏等）
+    case invalidPlayURL(String)
 
     var errorDescription: String? {
         switch self {
@@ -43,6 +45,8 @@ enum PlaybackError: LocalizedError {
             return "该视频为充电专属视频 \(underlying)"
         case .missingCid:
             return "视频分P信息异常（cid 缺失），请尝试重新进入"
+        case let .invalidPlayURL(raw):
+            return "播放地址构造失败：\(raw)"
         }
     }
 }
@@ -389,10 +393,10 @@ class VideoPlayerViewModel {
         }
 
         // SpeedChangerPlugin creates the shared settings menu that later plugins extend.
-        // 片头片尾插件（「更多设置」齿轮菜单）必须紧随其后、排在 CDN 测速/Debug/播放列表之前：
-        // 后三者的条目要挂进它的 .moreMenu 菜单（菜单按插件顺序构建，挂载点须先创建）
+        // 片头片尾插件（「更多设置」齿轮菜单）必须紧随其后、排在 CDN 测速/弹幕设置/Debug/播放列表之前：
+        // 后四者的条目要挂进它的 .moreMenu 菜单（菜单按插件顺序构建，挂载点须先创建）
         let introOutro: CommonPlayerPlugin? = playMode == .preview ? nil : IntroOutroSkipPlugin(playInfo: playInfo)
-        var plugins: [CommonPlayerPlugin] = [playSpeed, playplugin, danmaku, upnp, debug, playlist, SleepTimerPlugin()]
+        var plugins: [CommonPlayerPlugin] = [playSpeed, playplugin, danmaku, upnp, debug, playlist]
         if let introOutro {
             plugins.insert(introOutro, at: 1)
         }
@@ -456,9 +460,6 @@ class VideoPlayerViewModel {
                mask.fps > 0
             {
                 let maskProvider = BMaskProvider(info: mask, videoSize: CGSize(width: video.width ?? 0, height: video.height ?? 0))
-                plugins.append(MaskViewPlugin(maskView: danmaku.danmakuView, maskProvider: maskProvider))
-            } else if Settings.vnMask {
-                let maskProvider = VMaskProvider()
                 plugins.append(MaskViewPlugin(maskView: danmaku.danmakuView, maskProvider: maskProvider))
             }
         }

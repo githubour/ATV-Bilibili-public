@@ -20,10 +20,33 @@ enum BLCapsuleShape {
 }
 
 /// 胶囊形模糊容器：侧栏菜单项、纯文字卡片
+///
+/// 边缘补一层纯高光（`BLGlassRimView`）：系统玻璃在这么薄的胶囊上高光不明显，
+/// 不补就退化成均匀毛玻璃（用户 2026-11-01 反馈「边缘和中间一样」）。
+/// rim 加在 `contentView` 最底层，调用方后续加进来的文字仍然压在它上面。
 final class BLCapsuleEffectView: UIVisualEffectView {
+    private let rim = BLGlassRimView()
+
+    override init(effect: UIVisualEffect?) {
+        super.init(effect: effect)
+        installRim()
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    private func installRim() {
+        rim.frame = contentView.bounds
+        rim.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        contentView.insertSubview(rim, at: 0)
+    }
+
     override func layoutSubviews() {
         super.layoutSubviews()
         BLCapsuleShape.apply(to: self)
+        rim.frame = contentView.bounds
     }
 }
 

@@ -18,6 +18,8 @@ class StandardVideoCollectionViewController<T: PlayableData>: UIViewController, 
     var reloadInterval: TimeInterval = 60 * 60
     var reloading = false
     private var page = 0
+    /// 刷新/翻页共用代次：刷新期间在飞的旧页任务不能把旧数据 append 进新列表
+    private var loadGeneration = 0
     override var preferredFocusEnvironments: [UIFocusEnvironment] {
         return [collectionVC.collectionView]
     }
@@ -72,6 +74,10 @@ class StandardVideoCollectionViewController<T: PlayableData>: UIViewController, 
         let alert = UIAlertController(title: nil, message: item.title, preferredStyle: .alert)
         // 番剧/影视等 PGC 内容 aid 为 0（走另一套「追番」逻辑），只对普通稿件开放这些操作
         if let playable = item as? any PlayableData, playable.aid > 0 {
+            // 「稍后再看」是最常用的操作，放在第一项；一键三连挪到第二位（用户 2026-11-01 定）。
+            alert.addAction(UIAlertAction(title: "稍后再看", style: .default) { [weak self] _ in
+                self?.addToView(aid: playable.aid)
+            })
             alert.addAction(UIAlertAction(title: "一键三连", style: .default) { [weak self] _ in
                 Task {
                     let result = await WebRequest.requestOneClickTriple(aid: playable.aid)
@@ -79,9 +85,6 @@ class StandardVideoCollectionViewController<T: PlayableData>: UIViewController, 
                         self?.presentAlert(title: "一键三连", message: result)
                     }
                 }
-            })
-            alert.addAction(UIAlertAction(title: "稍后再看", style: .default) { [weak self] _ in
-                self?.addToView(aid: playable.aid)
             })
         }
         // 推荐流卡片才提供「不感兴趣」反馈(其他列表不是推荐出来的, 上报无意义)
@@ -209,16 +212,22 @@ class StandardVideoCollectionViewController<T: PlayableData>: UIViewController, 
     func reallyReloadData() async {
         if reloading { return }
         reloading = true
+        loadGeneration += 1
+        let generation = loadGeneration
         defer {
-            reloading = false
+            if generation == loadGeneration {
+                reloading = false
+            }
         }
         lastReloadDate = Date()
         page = 1
         do {
             let res = try await request(page: 1)
+            guard generation == loadGeneration else { return }
             collectionVC.displayDatas = []
             collectionVC.appendData(displayData: res)
         } catch let err {
+            guard generation == loadGeneration else { return }
             presentError(err)
         }
     }
@@ -227,11 +236,18 @@ class StandardVideoCollectionViewController<T: PlayableData>: UIViewController, 
 
     private func loadMore() {
         guard supportPullToLoad() else { return }
+        let generation = loadGeneration
+        let nextPage = page + 1
         Task {
             do {
-                let res = try await request(page: page + 1)
+                let res = try await request(page: nextPage)
+                guard generation == loadGeneration else {
+                    // 刷新已插队: 本次是旧页任务, 放旗交给刷新路径接管
+                    collectionVC.finishLoading()
+                    return
+                }
                 collectionVC.appendData(displayData: res)
-                page += 1
+                page = max(page, nextPage)
             } catch {
                 // 翻页是自动触发的，失败只记日志不弹窗，避免打断浏览；
                 // 但必须复位 isLoading，否则一次失败后永远不再加载下一页

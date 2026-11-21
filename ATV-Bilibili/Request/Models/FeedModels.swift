@@ -13,18 +13,83 @@ struct HistoryData: DisplayData, Codable, PlayableData {
     private let cidValue: Int?
     var cid: Int { cidValue ?? 0 }
     let aid: Int
+    /// 观看进度（秒）。与 duration 同为秒，接口不给毫秒
     let progress: Int
+    /// 全部分 P 的总时长（秒）；多 P 稿件不是当前这一 P 的时长
     let duration: Int
     let view_at: Int
     let stat: Stat?
+
+    /// 最后观看的那一分 P（x/v2/history 的 page 对象）；单 P 稿件可能缺省
+    private let lastPage: Page?
+    /// archive / pgc / cheese / live / article ...
+    let business: String?
+    /// 3 普通视频 / 4 剧集 / 10 课程
+    let type: Int?
+    /// 剧集信息；只有番剧/影视条目才有
+    private let bangumi: Bangumi?
 
     // displayData
     let title: String
     var ownerName: String { owner.name }
     var avatar: URL? { owner.face.flatMap(URL.init(string:)) }
 
-    var date: String? {
-        DateFormatter.relativeTimeStringFor(timestamp: view_at)
+    /// 最后观看的分 P cid。接口的 cid 字段固定是第 1P，
+    /// 直接拿它续播多 P 稿件会跳回 P1 从头开始。
+    var resumeCid: Int {
+        if let lastPageCid = lastPage?.cid, lastPageCid > 0 { return lastPageCid }
+        return cid
+    }
+
+    /// 续播目标分 P 的时长（秒）。用 duration（全 P 总和）算剩余分钟会算错
+    var resumeDuration: Int {
+        if let pageDuration = lastPage?.duration, pageDuration > 0 { return pageDuration }
+        return duration
+    }
+
+    /// 剧集/课程必须走 PGC 链路（epid/seasonId）：当普通稿件直进播放器会请求错接口、也容易选错集
+    var isPgcContent: Bool {
+        business == "pgc" || business == "cheese" || type == 4 || type == 10
+    }
+
+    var epid: Int? { bangumi?.ep_id }
+    var seasonId: Int? { bangumi?.season?.season_id }
+
+    /// 直播/专栏没有可续播的视频进度
+    var isPlayableBusiness: Bool {
+        guard let business else { return true } // 老响应没有 business 时按稿件处理
+        return business == "archive" || business == "pgc" || business == "cheese"
+    }
+
+    /// 冷启动续看横幅的筛选：已开始、未看完、内容可播
+    var isResumeCandidate: Bool {
+        guard isPlayableBusiness, progress > 0 else { return false }
+        let total = resumeDuration
+        // 距结尾不足 5 秒视为看完，避免每次启动都推一个马上结束的视频
+        if total > 0, progress >= total - 5 { return false }
+        return true
+    }
+
+    /// 横幅副标题的剩余分钟（向上取整，至少 1 分钟）；总时长未知时返回 nil
+    var remainingMinutes: Int? {
+        let total = resumeDuration
+        guard total > 0 else { return nil }
+        let remain = max(total - progress, 0)
+        return max((remain + 59) / 60, 1)
+    }
+
+    struct Page: Codable, Hashable {
+        let cid: Int?
+        let duration: Int?
+    }
+
+    struct Bangumi: Codable, Hashable {
+        let ep_id: Int?
+        let season: Season?
+
+        struct Season: Codable, Hashable {
+            let season_id: Int?
+        }
     }
 
     var overlay: DisplayOverlay? {
@@ -49,6 +114,8 @@ struct HistoryData: DisplayData, Codable, PlayableData {
         case pic, owner
         case cidValue = "cid"
         case aid, progress, duration, view_at, stat, title
+        case lastPage = "page"
+        case business, type, bangumi
     }
 }
 

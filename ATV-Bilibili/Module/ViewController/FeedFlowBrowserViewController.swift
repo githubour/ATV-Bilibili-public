@@ -562,7 +562,7 @@ class FeedFlowBrowserViewController: UIViewController, BLTabBarContentVCProtocol
             : dataSource.defaultPreviewHintText
         if let coverURL = item.coverURL {
             UIView.transition(with: previewPlaceholderView, duration: 0.25, options: .transitionCrossDissolve) {
-                self.previewPlaceholderView.kf.setImage(with: coverURL)
+                self.previewPlaceholderView.kf.setImage(with: coverURL, options: .cover(width: 1920, height: 1080))
             }
         } else {
             UIView.transition(with: previewPlaceholderView, duration: 0.25, options: .transitionCrossDissolve) {

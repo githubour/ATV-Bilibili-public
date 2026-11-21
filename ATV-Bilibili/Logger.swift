@@ -11,13 +11,22 @@ import Foundation
 class Logger {
     private static let fileLogger = DDFileLogger()
     static func setup() {
-        DDLog.add(DDOSLogger.sharedInstance)
+        #if DEBUG
+            // Debug 保持全量，真机 /debug/log 排障不受影响
+            DDLog.add(DDOSLogger.sharedInstance)
+            DDLog.add(fileLogger)
+        #else
+            // Release：os_log 只收 warning+、文件保留 info（诊断可回溯），dynamicLogLevel
+            // 在源头拦掉 debug（连字符串插值都不发生）；此前默认 .all 全量落盘
+            DDLog.add(DDOSLogger.sharedInstance, with: .warning)
+            DDLog.add(fileLogger, with: .info)
+            dynamicLogLevel = .info
+        #endif
         fileLogger.logFormatter = DDLogFileFormatterDefault(dateFormatter: DateFormatter.logFileTimestamp)
         fileLogger.rollingFrequency = 60 * 60 * 24 // 24 hours
         fileLogger.logFileManager.maximumNumberOfLogFiles = 2
         fileLogger.doNotReuseLogFiles = true
         fileLogger.maximumFileSize = 1024 * 1024 * 5
-        DDLog.add(fileLogger)
     }
 
     static func debug(_ message: @autoclosure () -> DDLogMessageFormat,
@@ -25,7 +34,9 @@ class Logger {
                       function: StaticString = #function,
                       line: UInt = #line)
     {
-        DDLogDebug(message(), file: file, function: function, line: line)
+        #if DEBUG
+            DDLogDebug(message(), file: file, function: function, line: line)
+        #endif
     }
 
     static func info(_ message: @autoclosure () -> DDLogMessageFormat,

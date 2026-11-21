@@ -147,6 +147,13 @@ class BLButton: UIControl {
     private var motionEffect: UIInterpolatingMotionEffect!
     fileprivate let effectView = UIVisualEffectView(effect: UIBlurEffect(style: .dark))
     private let selectedWhiteView = UIView()
+    /// 玻璃边缘高光：与 `BLCapsuleEffectView` 同一套（系统玻璃在薄胶囊上高光不够明显）
+    private let glassRim = BLGlassRimView()
+
+    /// 默认 nil = 保持 .dark 模糊（既有用点零变化）；需要玻璃观感的调用方传入 BLGlass.effect()
+    var backgroundEffect: UIVisualEffect? {
+        didSet { effectView.effect = backgroundEffect ?? UIBlurEffect(style: .dark) }
+    }
 
     var onPrimaryAction: ((BLButton) -> Void)?
 
@@ -178,6 +185,9 @@ class BLButton: UIControl {
             make.top.leading.trailing.equalToSuperview()
             make.bottom.equalToSuperview().priority(.high)
         }
+        glassRim.frame = effectView.contentView.bounds
+        glassRim.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        effectView.contentView.addSubview(glassRim)
         effectView.contentView.addSubview(selectedWhiteView)
         selectedWhiteView.backgroundColor = UIColor.white
         selectedWhiteView.snp.makeConstraints { make in
@@ -190,6 +200,7 @@ class BLButton: UIControl {
         super.layoutSubviews()
         let radius = effectView.bounds.height / 2
         effectView.layer.cornerRadius = radius.isFinite ? radius : 16
+        glassRim.frame = effectView.contentView.bounds
     }
 
     override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
@@ -203,14 +214,18 @@ class BLButton: UIControl {
     /// 聚焦态切换回调（例如焦点白底上需要换深色文字）
     var onFocusChanged: ((Bool) -> Void)?
 
+    /// 聚焦放大倍数；卡内按钮设 1.0 可只保留高亮、不放大（放大后容易超出卡片边界）
+    var focusScaleFactor: CGFloat = 1.1
+
     override func didUpdateFocus(in context: UIFocusUpdateContext, with coordinator: UIFocusAnimationCoordinator) {
         super.didUpdateFocus(in: context, with: coordinator)
         onFocusChanged?(isFocused)
         if isFocused {
             selectedWhiteView.isHidden = false
             coordinator.addCoordinatedAnimations {
-                self.transform = CGAffineTransformMakeScale(1.1, 1.1)
-                let scaleDiff = (self.bounds.size.height * 1.1 - self.bounds.size.height) / 2
+                let scale = self.focusScaleFactor
+                self.transform = CGAffineTransformMakeScale(scale, scale)
+                let scaleDiff = (self.bounds.size.height * scale - self.bounds.size.height) / 2
                 self.transform = CGAffineTransformTranslate(self.transform, 0, -scaleDiff)
                 self.layer.shadowOffset = CGSizeMake(0, 10)
                 self.layer.shadowOpacity = 0.15

@@ -148,17 +148,23 @@ enum FeaturedContentSafetyFilter {
         }
     }
 
+    /// 逐字符过滤用的排除集，只在进程启动时构造一次。
+    /// 不能把 `CharacterSet.whitespacesAndNewlines` 这类静态属性写进逐字符循环：
+    /// 每次访问都会桥接出一个新的 NSCharacterSet（内含约 8KiB 位图），
+    /// 一页推荐 5 个文本字段 × 逐字符 × 4 个集合就是数十万次分配，
+    /// 自动释放池排空前可累积到 1.6GB，直接触发 tvOS per-process-limit jetsam
+    /// （2026-11-14 真机崩溃：Malloc 8KiB × 214580 常驻）。
+    private static let ignoredScalars: CharacterSet = CharacterSet.whitespacesAndNewlines
+        .union(.punctuationCharacters)
+        .union(.symbols)
+        .union(.controlCharacters)
+
     private static func normalize(_ text: String?) -> String {
         guard let text else { return "" }
         let withoutHTML = text.removingHTMLTags()
         let halfWidth = withoutHTML.applyingTransform(.fullwidthToHalfwidth, reverse: false) ?? withoutHTML
         let lowered = halfWidth.lowercased()
-        let filteredScalars = lowered.unicodeScalars.filter { scalar in
-            !CharacterSet.whitespacesAndNewlines.contains(scalar) &&
-                !CharacterSet.punctuationCharacters.contains(scalar) &&
-                !CharacterSet.symbols.contains(scalar) &&
-                !CharacterSet.controlCharacters.contains(scalar)
-        }
+        let filteredScalars = lowered.unicodeScalars.filter { !ignoredScalars.contains($0) }
         return String(String.UnicodeScalarView(filteredScalars))
     }
 }

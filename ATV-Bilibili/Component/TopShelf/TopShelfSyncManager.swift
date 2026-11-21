@@ -159,10 +159,10 @@ actor TopShelfSyncManager {
     }
 
     private func fetchHistory() async throws -> [TopShelfItemData] {
-        // 继续观看 = 已开始但未看完的历史；progress/duration 单位为毫秒，progress<=0 表示未真正观看
+        // 继续观看 = 已开始但未看完的历史；progress/duration 单位为秒（与 App 内横幅同一判据）
         let list = try await WebRequest.requestHistory()
         return list
-            .filter { $0.progress > 0 && ($0.duration <= 0 || $0.progress < $0.duration) }
+            .filter { $0.isResumeCandidate }
             .prefix(Self.maxItemCount)
             .compactMap { item -> TopShelfItemData? in
                 guard let pic = item.pic, !pic.absoluteString.isEmpty else { return nil }

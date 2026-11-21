@@ -12,6 +12,27 @@ import UIKit
 /// shouldDismiss，用户以为进度条还开着而按返回时就会整场退出。
 /// 规则：进度条可见时第一次 Menu 只收起进度条；进度条收起后极短时间内的第一次
 /// Menu 也按「收起进度条」吞掉，之后再按才真正退出。
+/// AVKit 会在后台队列继续访问刚被替换/清空的 AVPlayer：
+/// 2026-10-17 的崩溃栈是 AVInterstitialController → -[AVPlayerInterstitialEventMonitor events]
+/// 在 com.apple.root.user-interactive-qos 上 objc_msgSend 野指针（EXC_BAD_ACCESS）。
+/// 换 item / 退出时把旧 player 延迟释放，给系统组件留出收尾窗口。
+@MainActor
+enum PlayerRetirement {
+    private static var retired = [AVPlayer]()
+
+    static func retire(_ player: AVPlayer?) {
+        guard let player else { return }
+        retired.append(player)
+        if retired.count > 3 {
+            retired.removeFirst(retired.count - 3)
+        }
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 30_000_000_000)
+            retired.removeAll { $0 === player }
+        }
+    }
+}
+
 struct MenuDismissGuard {
     static let defaultGraceInterval: CFTimeInterval = 1.0
 
@@ -177,6 +198,7 @@ class CommonPlayerViewController: UIViewController {
         // cleanup hook even when playerVC.player has not been installed yet.
         removeAllPlugins()
         player?.replaceCurrentItem(with: nil)
+        PlayerRetirement.retire(playerVC.player)
         playerVC.player = nil
     }
 

@@ -126,32 +126,41 @@ class VideoDanmakuProvider: DanmakuProviderProtocol {
             return
         }
 
-        var dms = reply.elems
-            .filter { $0.mode <= 5 }
+        let elems = reply.elems.filter { $0.mode <= 5 }
+        // 设置开关只在主线程读一次；合并归一化与屏蔽正则都是纯 CPU 活，整段挪后台，
+        // 热门稿件单段数千条在主线程处理会造成可感知卡顿
+        let merge = Settings.danmakuMergeDuplicates
+        let dedup = enableDanmakuRemoveDup
+        let filterOn = enableDanmakuFilter
+        let snapshot = filterOn ? VideoDanmakuFilter.shared.makeSnapshot() : nil
 
-        // 合并优先：把时间相邻的重复弹幕折叠成一条并标注 ×N；关掉合并时退回精确去重。
-        // 顺序纪律：先合并、后（DanmakuViewPlugin 里的同屏）限流，别反。
-        if Settings.danmakuMergeDuplicates {
-            dms = Self.mergeRepeatedDanmaku(dms)
-        } else if enableDanmakuRemoveDup {
-            var set = Set<String>()
-            dms = dms.filter { set.insert($0.content).inserted }
-        }
-
-        if enableDanmakuFilter {
-            dms = dms.filter {
-                VideoDanmakuFilter.shared.accept($0.content, midHash: $0.midHash)
+        let models: [Danmaku] = await Task.detached(priority: .utility) { () -> [Danmaku] in
+            var dms = elems
+            // 合并优先：把时间相邻的重复弹幕折叠成一条并标注 ×N；关掉合并时退回精确去重。
+            // 顺序纪律：先合并、后（DanmakuViewPlugin 里的同屏）限流，别反。
+            if merge {
+                dms = VideoDanmakuProvider.mergeRepeatedDanmaku(dms)
+            } else if dedup {
+                var set = Set<String>()
+                dms = dms.filter { set.insert($0.content).inserted }
             }
-        }
 
-        var models = dms
-            .map { Danmaku(dm: $0) }
-        models.sort { $0.time < $1.time }
+            if let snapshot {
+                dms = dms.filter {
+                    VideoDanmakuFilter.accept($0.content, midHash: $0.midHash, with: snapshot)
+                }
+            }
+
+            var models = dms.map { Danmaku(dm: $0) }
+            models.sort { $0.time < $1.time }
+            return models
+        }.value
+
         segmentDanmakus[idx] = models
         segmentRetryAt.removeValue(forKey: idx)
         segmentFailureCount.removeValue(forKey: idx)
 
-        Logger.debug("[dm] cid:\(cid) sidx:\(idx) danmu cnt: \(dms.count)")
+        Logger.debug("[dm] cid:\(cid) sidx:\(idx) danmu cnt: \(models.count)")
     }
 
     /// pakku 式重复弹幕合并：同一规范化文本 + 同模式、首次出现时间相距在 window 毫秒内的多条，
@@ -180,12 +189,16 @@ class VideoDanmakuProvider: DanmakuProviderProtocol {
         return out
     }
 
+    /// 归一化用的排除集只构造一次。`CharacterSet.whitespacesAndNewlines` 是静态属性，
+    /// 每次访问都会桥接出新的 NSCharacterSet（约 8KiB 位图）；放进逐字符循环后，
+    /// 单段几千条弹幕就能累积出上百 MB，与「推荐流安全过滤」那处同源（2026-11-14 真机 OOM）。
+    private static let ignoredDanmakuScalars: CharacterSet = CharacterSet.whitespacesAndNewlines
+        .union(.punctuationCharacters)
+
     /// 归一化弹幕文本：去空白、去标点、全角转半角、大小写不敏感，作为「同一条」的判据
     static func normalizedDanmakuText(_ text: String) -> String {
         let folded = text.folding(options: [.widthInsensitive, .caseInsensitive], locale: .current)
-        let kept = folded.unicodeScalars.filter {
-            !CharacterSet.whitespacesAndNewlines.contains($0) && !CharacterSet.punctuationCharacters.contains($0)
-        }
+        let kept = folded.unicodeScalars.filter { !ignoredDanmakuScalars.contains($0) }
         let result = String(String.UnicodeScalarView(kept))
         return result.isEmpty ? folded.trimmingCharacters(in: .whitespacesAndNewlines) : result
     }
@@ -227,6 +240,12 @@ class VideoDanmakuProvider: DanmakuProviderProtocol {
 
         fetchMoreDanmakuInBackground(time: time)
         let sidx = getSegmentIdx(time: time)
+        // 只驻留当前段±1：3 小时稿件 30 段全量驻留约 5~10MB。淘汰段跨段回看时会重新拉取，
+        // 须同步移出 inFlightSegments（成功段会滞留其中充当「已加载」标记）才有重拉机会
+        for stale in segmentDanmakus.keys.filter({ abs($0 - sidx) > 1 }) {
+            segmentDanmakus.removeValue(forKey: stale)
+            inFlightSegments.remove(stale)
+        }
         guard let dms = segmentDanmakus[sidx] else { return }
 
         let diff = time - lastTime
@@ -247,11 +266,13 @@ class VideoDanmakuProvider: DanmakuProviderProtocol {
             onSendTextModel.send(model)
         }
 
+        // 屏蔽等级 UserDefaults 不逐条读：一段热门弹幕可达数千条
+        let aiLevelFloor = Settings.danmakuAILevel
         while danmakuIdx < dms.count {
             let dm = dms[danmakuIdx]
             guard dm.time < time else { break }
             danmakuIdx += 1
-            if dm.aiLevel < Settings.danmakuAILevel { continue }
+            if dm.aiLevel < aiLevelFloor { continue }
             let model = DanmakuTextCellModel(dm: dm)
             onSendTextModel.send(model)
         }

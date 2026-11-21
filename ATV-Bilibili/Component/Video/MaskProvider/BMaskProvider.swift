@@ -19,6 +19,10 @@ class BMaskProvider: MaskProvider {
     private lazy var shapeLayer = CAShapeLayer()
 
     private var lastTime: TimeInterval = 0
+    /// 上次真正写进 CAShapeLayer 的 path / frame。面罩流自己的帧率远低于视频帧率，
+    /// 逐帧重复赋值会让图层反复栅格化整屏遮罩。
+    private var lastAppliedPath: CGPath?
+    private var lastAppliedFrame: CGRect?
     /// 下载 + 建段索引的任务（不再顺带把整条流解成帧）
     private var indexTask: Task<Void, Never>?
 
@@ -48,14 +52,24 @@ class BMaskProvider: MaskProvider {
     init(info: PlayerInfo.MaskInfo, videoSize: CGSize) {
         self.info = info
         self.videoSize = videoSize
-        indexTask = Task(priority: .utility) { [weak self] in
-            guard let self else { return }
-            try? await self.download()
-        }
+        // 遮罩流懒下载：首次 getMask（弹幕真正在显示、逐帧回调跑到了）才拉取，
+        // 弹幕关闭的会话不再白下整条遮罩流
     }
 
     deinit {
         indexTask?.cancel()
+    }
+
+    /// 只在主线程（逐帧观察回调）触发一次；`getMask` 是它唯一的调用方
+    private var downloadStarted = false
+
+    private func startDownloadIfNeeded() {
+        guard !downloadStarted else { return }
+        downloadStarted = true
+        indexTask = Task(priority: .utility) { [weak self] in
+            guard let self else { return }
+            try? await self.download()
+        }
     }
 
     /// 只做「下载 → 建段索引」，不再把整条遮罩流一次性解成帧。
@@ -285,24 +299,26 @@ class BMaskProvider: MaskProvider {
     }
 
     func getMask(for time: CMTime, frame: CGRect, onGet: (CALayer) -> Void) {
+        startDownloadIfNeeded()
         let time = time.seconds + 0.1
         guard time != lastTime else { return }
         lastTime = time
         if time < 0 { return }
         guard let path = framePath(for: UInt32(time * 1000)) else { return }
-        shapeLayer.path = path
-        shapeLayer.fillColor = UIColor.white.cgColor
-        shapeLayer.strokeColor = UIColor.white.cgColor
-        shapeLayer.backgroundColor = UIColor.clear.cgColor
-        shapeLayer.frame = frame
+        // 时间观察者按视频帧率（30-60fps）回调，而遮罩帧率只有 15-30：同一个 CGPath
+        // 会被连续查到时不再重赋值，避免 CAShapeLayer 每帧重新栅格化整屏 mask。
+        if path !== lastAppliedPath || lastAppliedFrame != frame {
+            shapeLayer.path = path
+            shapeLayer.fillColor = UIColor.white.cgColor
+            shapeLayer.strokeColor = UIColor.white.cgColor
+            shapeLayer.backgroundColor = UIColor.clear.cgColor
+            shapeLayer.frame = frame
+            lastAppliedPath = path
+            lastAppliedFrame = frame
+        }
         onGet(shapeLayer)
     }
 
-    func needVideoOutput() -> Bool {
-        return false
-    }
-
-    func setVideoOutout(ouput: AVPlayerItemVideoOutput) {}
     func preferFPS() -> Int {
         return info.fps
     }
